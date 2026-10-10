@@ -77,6 +77,14 @@ from ucm.sparse.state import has_ucm_sparse
 logger = init_logger(__name__)
 
 
+def _get_kv_cache_tensor_layer_names(raw_tensor) -> list[str]:
+    """Read layer names from both new and legacy vLLM KVCacheTensor objects."""
+    layer_names = getattr(raw_tensor, "layers", None)
+    if layer_names is None:
+        layer_names = raw_tensor.shared_by
+    return layer_names
+
+
 def _has_shared_indexer_layers(vllm_config: "VllmConfig") -> bool:
     model_config = getattr(vllm_config, "model_config", None)
     configs = (
@@ -3279,6 +3287,28 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         )
         if role == KVConnectorRole.WORKER and self._worker_rank == 0:
             logger.info(f"UCM worker rank 0 KV cache config: {kv_cache_config!r}")
+        if role == KVConnectorRole.WORKER and kv_cache_config is not None:
+            logger.info(
+                "[UCM KV LAYOUT] rank=%s, layout=%s, num_blocks=%s, "
+                "num_tensors=%s (size/stride/offset in bytes)",
+                self._worker_rank,
+                getattr(kv_cache_config, "kv_cache_layout", None),
+                kv_cache_config.num_blocks,
+                len(kv_cache_config.kv_cache_tensors),
+            )
+            for tensor_index, raw_tensor in enumerate(kv_cache_config.kv_cache_tensors):
+                logger.info(
+                    "[UCM KV LAYOUT] rank=%s, tensor=%s, layers=%s, size=%s, "
+                    "layer_stride=%s, block_stride=%s, offset=%s, host_resident=%s",
+                    self._worker_rank,
+                    tensor_index,
+                    _get_kv_cache_tensor_layer_names(raw_tensor),
+                    raw_tensor.size,
+                    getattr(raw_tensor, "layer_stride", None),
+                    getattr(raw_tensor, "block_stride", None),
+                    getattr(raw_tensor, "offset", None),
+                    getattr(raw_tensor, "host_resident", None),
+                )
         self._setup_ucm_metrics(vllm_config, role)
         logger.info(f"self.launch_config: {self.launch_config}")
 
@@ -3563,6 +3593,33 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         Args: kv_caches:
             dictionary of layer names, kv cache
         """
+        logger.info(
+            "[UCM KV LAYOUT] rank=%s, connector=%s, registered_layers=%s",
+            self._worker_rank,
+            type(self.connector).__name__,
+            len(kv_caches),
+        )
+        for layer_name, kv_layer in kv_caches.items():
+            tensors = kv_layer if isinstance(kv_layer, (tuple, list)) else (kv_layer,)
+            for component, tensor in enumerate(tensors):
+                if not isinstance(tensor, torch.Tensor):
+                    continue
+                logger.info(
+                    "[UCM KV LAYOUT] rank=%s, layer=%s, component=%s, "
+                    "shape=%s, stride_bytes=%s, element_size=%s, dtype=%s, "
+                    "device=%s, data_ptr=%s, storage_offset_bytes=%s, contiguous=%s",
+                    self._worker_rank,
+                    layer_name,
+                    component,
+                    tuple(tensor.shape),
+                    tuple(stride * tensor.element_size() for stride in tensor.stride()),
+                    tensor.element_size(),
+                    tensor.dtype,
+                    tensor.device,
+                    tensor.data_ptr(),
+                    tensor.storage_offset() * tensor.element_size(),
+                    tensor.is_contiguous(),
+                )
         self.connector.register_kv_caches(kv_caches)
 
     @_record_connector_interface_duration

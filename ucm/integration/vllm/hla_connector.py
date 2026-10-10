@@ -34,6 +34,7 @@ from ucm.integration.vllm.ucm_connector import (
     UCMConnectorMetadata,
     UCMDirectConnector,
     UCMLiteConnector,
+    _get_kv_cache_tensor_layer_names,
     _record_counter,
     _scheduler_read_block_size,
     _short_list,
@@ -546,7 +547,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         shared_specs: list[KVCacheSpec] = []
         shared_ptrs: list[int] = []
         layer_to_specs = layer_name_to_kv_cache_spec(self.kv_cache_config)
-        for layer_name in raw_tensor.shared_by:
+        for layer_name in _get_kv_cache_tensor_layer_names(raw_tensor):
             kv_layer = kvcaches.get(layer_name)
             if kv_layer is None:
                 continue
@@ -687,7 +688,8 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         is_npu = current_platform.device_type == "npu"
 
         for raw_tensor in self.kv_cache_config.kv_cache_tensors:
-            if not raw_tensor.shared_by:
+            layer_names = _get_kv_cache_tensor_layer_names(raw_tensor)
+            if not layer_names:
                 continue
 
             shared_specs, shared_ptrs = self._collect_shared_tensor_info(
@@ -696,7 +698,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
 
             if not shared_ptrs:
                 logger.warning(
-                    f"no kv cache tensor found for shared layers {raw_tensor.shared_by}"
+                    f"no kv cache tensor found for shared layers {layer_names}"
                 )
                 continue
 
@@ -736,7 +738,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
                     block_stride_lists,
                 )
 
-            for layer_name in raw_tensor.shared_by:
+            for layer_name in layer_names:
                 self.layer_name_to_row[layer_name] = row_id
 
         self._finalize_layout_arrays(
@@ -770,7 +772,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         for raw_tensor in kv_cache_config.kv_cache_tensors:
             shared_specs = [
                 spec
-                for layer_name in raw_tensor.shared_by
+                for layer_name in _get_kv_cache_tensor_layer_names(raw_tensor)
                 for spec in layer_to_specs.get(layer_name, [])
             ]
             if any(
