@@ -149,8 +149,9 @@ ucm_connector_config:
 - 对 LoadQueue 入队做 producer 串行化，修复 LocalBufferStrategy nodeCursor 的并发数据竞争；没有改 StoreV1 ABI、后端布局、健康检查或 Dump 语义。
 - 审查修复：worker 构造或 stream Setup 失败后停止接纳，发布 dispatcherDone 并 join 已启动的 transfer，避免构造失败时析构等待；图路径显式拒绝有效 IO aggregation 与 GDR 模式，因为当前错误返回不保证所有 lane/NIC 访问 drain。原关闭图路径语义不变。
 - 完成语义更正：原先认为所有 TaskWrapper Wait（包括 AIO）都能 drain 的假设不成立。新增独立 `LoadWaitCompletion` 能力接口，不改 StoreV1 虚表；真实 Posix 对象仅在成功 Setup 且 strict psync Load 模式下声明能力，HealthBreaker/基准计数包装器真实转发。未知、ASU、AIO、非 strict psync 后端拒绝图路径；同时拒绝未经验证的有效 SDMA Direct。
-- strict psync 由后端 Setup 的 `cache_transfer_graph` 开启，仅取消 loadPool 的 active worker timeout/detach monitor，dumpPool 不改。逻辑 timeout 仍取消排队工作并等待活跃 read 返回；hard NFS mount I/O 若永久不返回，Wait/停机也可能永久等待，不能提前释放 buffer。新增实际阻塞 pread 跨越 1.6 秒监控周期的回归及能力/健康包装转发测试，Linux 执行结果待 CI。
+- strict psync 由后端 Setup 的 `cache_transfer_graph` 开启，仅取消 loadPool 的 active worker timeout/detach monitor，dumpPool 不改。逻辑 timeout 仍取消排队工作并等待活跃 read 返回；hard NFS mount I/O 若永久不返回，Wait/停机也可能永久等待，不能提前释放 buffer。新增实际阻塞 pread 跨越 1.6 秒监控周期的回归及能力/健康包装转发测试，已在下述 Linux CI 通过。
 - 新增可移植计划测试、Linux simu 实际执行器故障/资源测试，以及 `MakeCacheStore()->Load/Wait -> MakePosixStore()` 的 C++ JSONL 对照基准。基准预热分离、实际计数、全数据校验；CPU/吞吐包含校验，延迟仅计 Load-through-Wait，未采集项明确输出 null。
-- Windows g++ 8.1 C++17 可移植测试已通过 161139 个参考用例；主代理独立 rank 顺序核查另通过 43933 组。Linux 集成、基准运行、ASan/TSan、H100/910B3/A800 尚未在本机运行，等待 CI/审查补充，不据此宣称性能提升。
+- Windows g++ 8.1 C++17 可移植测试已通过 161139 个参考用例；主代理独立 rank 顺序核查另通过 43933 组。
+- 2026-10-22，代码提交 `63ac2591` 在 [Ubuntu simu CI](https://github.com/luomoduchu/unified-cache-management/actions/runs/39743377819) 完成构建，997 项启用的 CTest 全部通过（1 项原有指标压力测试禁用）；19 项图执行器测试重复 10 轮通过；两个顺序的实际 CacheStore/Posix 基准均通过。相同 4 个 backend miss，graph off/on 的实际提交数为 4/2；仅为微小冒烟样本，不能据此推断吞吐提升。ASan/TSan、aarch64、CUDA/Ascend 构建和 H100/910B3/A800 硬件仍未验证。
 
 配置、运行命令、测试覆盖及限制见 [使用与验证说明](../ucm-transfer-graph.md)，硬件实测规范见 [A800 评估说明](ucm-transfer-graph-a800-evaluation.md)。后续审查发现与实际执行结果应继续追加。

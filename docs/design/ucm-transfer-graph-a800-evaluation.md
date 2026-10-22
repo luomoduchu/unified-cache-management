@@ -88,3 +88,11 @@
 - Linux：未发现已安装 WSL 分发版或 Docker；用户确认没有远程测试机器。可使用该 GitHub 仓库已有 Ubuntu simu CI 做软件集成验证。
 - 目标：POSIX、x86/aarch64、H100/昇腾910B3；A800 客户端和挂载细节待补充。
 - 因此当前不能生成可信的 A800 加速百分比；交付应包含实现、可复现基准和实际已运行验证的记录。
+
+## 已完成的软件验证（2026-10-22）
+
+代码提交 `63ac2591` 的 [GitHub Actions](https://github.com/luomoduchu/unified-cache-management/actions/runs/39743377819) 已通过 Ubuntu 24.04.5 simu 构建、997 项启用的 CTest、可移植计划测试、指标回归及 19 项图执行器测试的 10 轮重复。1 项原有指标压力测试处于禁用状态。
+
+两种顺序的 CacheStore/Posix/simu 冒烟运行均完成全数据校验。在每种模式仅 2 个请求、每请求 4 个 4 KiB shard、50% 命中的条件下，同样 4 个 backend miss，提交数从 4 次降至 2 次；[原始 JSONL](ucm-transfer-graph-ci-smoke.jsonl) 保留四行输出。运行顺序反转后，吞吐和延迟的优劣也反转，因此这里只确认批量机制有效，不给出性能提升百分比。
+
+这些运行使用 CI 本地文件系统和模拟计算设备。A800、H100、910B3、aarch64 和设备故障恢复尚未测量，仍须按前述矩阵另行验证。

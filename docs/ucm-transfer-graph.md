@@ -188,7 +188,22 @@ software and must never be labeled H100, 910B3 or A800 performance.
 
 Windows MinGW g++ 8.1, C++17 `-O2 -Wall -Wextra -Werror`: portable test passed all
 161139 reference cases. The independent main-agent rank test also passed 43933
-cases. Linux integration, sanitizers, benchmark runtime and H100/910B3/A800
-measurements have not been run on this workstation, which has no Linux runtime
-or access to those devices. CI/reviewer results should be appended here when
-actually obtained; no throughput improvement is claimed from portable checks.
+cases.
+
+On 2026-10-22, commit `63ac2591b3fe42f7825c09b48b4922c2ef037450` passed
+[GitHub Actions](https://github.com/luomoduchu/unified-cache-management/actions/runs/39743377819)
+on Ubuntu 24.04.5 with the simu runtime: the build, all 997 enabled CTest cases,
+the Release portable plan test, three Python metrics checks, and 19 graph executor
+tests repeated ten times. The existing `UCMetricsStress.TenWritersOneCollector`
+test was disabled. The strict psync blocked-read timeout regression passed.
+C++/Python lint, toolkit build/install checks and the separate documentation check
+also passed. This is Linux software validation, with no physical GPU/NPU/A800.
+
+Both benchmark smoke orders passed full readback validation. With 4 KiB shards,
+4 shards/request, batch cap 4, one client and 50% hits, the two measured requests
+read four backend shards: graph off issued four backend submissions, graph on
+issued two. This confirms batching, not an end-to-end speedup. There are only two
+requests per mode; the latency/throughput ordering changes when run order changes.
+The [four raw smoke rows](design/ucm-transfer-graph-ci-smoke.jsonl) preserve the
+actual output. ASan/TSan, aarch64, CUDA/Ascend builds and H100/910B3/A800 hardware
+performance remain untested. See the [independent review](design/ucm-transfer-graph-review.md).

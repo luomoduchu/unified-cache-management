@@ -1,6 +1,6 @@
 # UcmTransferGraph 独立审查记录
 
-审查者：用户指定的 gpt-6-astra 代理。基线：`9cfffebd`；审查对象为 graph 分支工作区（含未跟踪的新文件）。2026-10-21 初审，2026-10-22 继续。源码审查已闭环，可提交 CI；不能视为 Linux/设备验证通过。
+审查者：用户指定的 gpt-6-astra 代理。基线：`9cfffebd`；2026-10-21 初审，2026-10-22 继续。最终代码提交为 `63ac2591b3fe42f7825c09b48b4922c2ef037450`。源码审查已闭环，Ubuntu simu 限定场景的软件验证通过；实际 CI 日志的独立复核见末节，不能视为真实设备验证通过。
 
 ## 已执行验证
 
@@ -14,7 +14,7 @@
 1. **P1 / metrics 导入失败（已源码复核及本机运行复核）**：四个新指标被插入一个原二元组，模块初始化解包失败，影响 graph 关闭的调用方。已拆成独立二元组；独立运行复核通过。
 2. **P2 / 紧池测试不稳定（已源码复核）**：两槽池在逐个 lease 释放、bucket 竞争时允许单元素 flush，9 shard 不保证最多5次提交。改为合法范围，另用充足池验证严格批量计数。
 3. **P2 / 完成回调测试竞态（已源码复核）**：Latch 先发布 counter=0 再执行 epilog，仅 WaitForDuration 不能保证测试的回调计数已更新。新增 epilog future 同步。
-4. **P1 / dispatcher 线程启动失败析构挂死（已源码复核，Linux故障注入待运行）**：transfer 已启动而 dispatcher 构造抛异常时，原 graph transfer 永远等待 dispatcherDone。修复启动异常收敛、失败后拒绝接纳，并新增线程/stream启动故障注入。
+4. **P1 / dispatcher 线程启动失败析构挂死（已源码复核，Linux 故障注入通过）**：transfer 已启动而 dispatcher 构造抛异常时，原 graph transfer 永远等待 dispatcherDone。修复启动异常收敛、失败后拒绝接纳，并新增线程/stream启动故障注入。
 5. **P1 / IO aggregation 与 GDR 同步失败不保证 drain（已限制组合，源码复核通过）**：AscendShardIOAggregator::Synchronize 在第一 lane/event 失败提前返回；GdrStream::Synchronized 在 HasAsyncError 时提前返回，未等待已接受的 NIC 请求终止。图不能在这些返回后无条件释放 host leases。第一阶段应明确拒绝这些组合，保留现有默认路径。
 6. **P1 / backend Wait 并非普遍终止保证（已严格限定并修复 psync Load，源码复核通过）**：
    - Posix AIO `io_engine_aio.h::ForceComplete` 在 CancelTask 后 Abort latch；`aio_impl.cc::CancelTask` 对不能取消的 I/O 仅保留记录，不等待内核完成。
@@ -36,7 +36,7 @@
 
 基准实际使用 CacheStore/Posix/simu，计数来自真正 backend Load，读取后逐字验证。单 shard block 消除旧 Prealloc 对对照的额外影响；CPU/吞吐包含请求准备与校验，延迟仅 Load-through-Wait，文档已区分。初审版本 off 总先于 on；复审版本已支持逆序参数（见下文），仍不能据单次结果宣称 A800 提升。未测峰值和 GPU 时间为 null。
 
-新增/补充的集成测试覆盖资源压力、重复/命中、批次失败、父失败后 drain、真实父 timeout、部分 H2D 失败、ghost slots、启动失败、并发 producer、停机与异常完成。源码覆盖不等于已经执行，须等待 Linux CI。
+新增/补充的集成测试覆盖资源压力、重复/命中、批次失败、父失败后 drain、真实父 timeout、部分 H2D 失败、ghost slots、启动失败、并发 producer、停机与异常完成。源码覆盖与实际执行证据分别记录；Linux CI 结果见末节。
 
 ## 2026-10-22 修复闭环复审（提交 CI 前）
 
@@ -54,6 +54,17 @@
 
 
 
-## CI 执行结果（由主代理追加）
+## 2026-10-22 CI 执行结果与最终结论
 
-待实际运行后记录提交 SHA、工作流链接、测试/基准结果与后续修复。当前未填写通过结论。
+本审查代理独立读取主代理下载的完整日志 `build/transfer-graph-validation/linux-ci.log`，并核对本地 HEAD 为 `63ac2591b3fe42f7825c09b48b4922c2ef037450`。执行来源为 [Ubuntu C++ CI job](https://github.com/luomoduchu/unified-cache-management/actions/runs/39743377819/job/119705803738)，并非审查代理在本机执行 Linux 测试。
+
+- Ubuntu Debug/simu 完整构建完成，包含 `ucmstore.test` 与 `transfer_graph_benchmark`。
+- CTest 实际执行 997 项，全部通过、0 失败，耗时 85.14 秒；另有原有 `UCMetricsStress.TenWritersOneCollector` 被禁用，不能计作通过。
+- metrics 回归 3 项通过；独立 portable plan CTest 1 项通过。
+- 19 项 GraphQueueTest 连续重复 10 轮，日志中 10 次均为 19 项通过。
+- `UCPosixStoreTest.StrictPsyncTimeoutWaitsForActiveReadToActuallyReturn` 通过。结合已审查的 1600 ms 阻塞 read hook 和 500 ms 逻辑超时，该回归验证 strict psync 在真实 read 返回前不会提前释放等待者。
+- 真实 CacheStore/Posix/simu smoke 以 `off-on`、`on-off` 两种顺序完成逐字读取校验。四条 JSON 均为 4096 字节 shard、每请求 4 shard、2 个计量请求、50% 命中、单并发、buffered psync。两种顺序下 graph 关闭均为 4 次 backend 提交/4 个 backend shard，开启均为 2 次提交/4 个 shard，平均批量由 1 增至 2；由此确认该场景的提交数减半。
+
+性能结果不支持吞吐提升结论：`off-on` 中开启图的含校验墙钟耗时较低（约 1.671 ms 对 2.149 ms），`on-off` 中却较高（约 1.544 ms 对 1.351 ms）。每模式只有 2 个计量请求，样本太少且存在顺序影响；不得据此宣称稳定延迟、吞吐或 A800 性能收益。
+
+最终结论：已发现的问题完成修复复核，第一阶段 strict Posix psync 与 simu 的限定软件场景通过 Linux 编译、集成回归、重复压力用例和真实 backend smoke；当前没有尚未处理的阻塞级审查发现。ASan/TSan、CUDA/Ascend 编译与 A800/H100/910B3 实机、NFS 故障注入均未验证。普通设备流的错误终止契约和 hard-mount NFS 可能长期等待的限制仍然成立，CI 通过不扩大支持范围。
