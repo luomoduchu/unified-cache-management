@@ -29,6 +29,22 @@ _COUNTER_METRICS = [
         "Shards whose Cache buffer was not ready when acquired and required waiting",
     ),
     (
+        "cache_transfer_graph_plan_hits_total",
+        "Transfer graph requests that reused a cached immutable plan",
+    ),
+    (
+        "cache_transfer_graph_plan_misses_total",
+        "Transfer graph requests that prepared a new immutable plan",
+    ),
+    (
+        "cache_transfer_graph_backend_batches_total",
+        "Successful backend Load submissions made by the transfer graph",
+    ),
+    (
+        "cache_transfer_graph_backend_shards_total",
+        "Owner miss shards in successful transfer graph backend Load submissions",
+    ),
+    (
         "cache_load_backend_shards_total",
         (
             "Shards that descended to the backend on load (true cache miss at the "

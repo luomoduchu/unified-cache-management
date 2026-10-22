@@ -24,7 +24,9 @@
 #include <algorithm>
 #include <memory>
 #include <numeric>
+#include <stdexcept>
 #include "buffer_manager.h"
+#include "load_wait_completion.h"
 #include "logger/logger.h"
 #include "trans/cuda/gdr/gdr_config.h"
 #include "trans_manager.h"
@@ -48,7 +50,12 @@ class CacheStore : public StoreV1 {
 public:
     Status Setup(const Detail::Dictionary& inConfig) override
     {
-        auto config = ParseConfig(inConfig);
+        Config config;
+        try {
+            config = ParseConfig(inConfig);
+        } catch (const std::exception& e) {
+            return Status::InvalidParam(e.what());
+        }
         auto s = CheckConfig(config);
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed to check config params: {}.", s);
@@ -170,6 +177,25 @@ private:
         param.cacheIOAggregation = param.cacheIOAggregation && UCM_RUNTIME_ASCEND_IO_AGGREGATION;
         config.Get("cache_sdma_direct", param.cacheSdmaDirect);
         config.GetNumber("local_rank_size", param.localRankSize);
+        config.Get("cache_transfer_graph", param.cacheTransferGraph);
+        auto graphNumber = [&](const char* key, size_t& target) {
+            ssize_t value = 0;
+            if (!config.Contains(key)) { return; }
+            config.GetNumber(key, value);
+            if (value < 0) {
+                throw std::invalid_argument(std::string(key) + " must be nonnegative");
+            }
+            target = static_cast<size_t>(value);
+        };
+        graphNumber("cache_graph_batch_shards", param.cacheGraphBatchShards);
+        graphNumber("cache_graph_batch_bytes", param.cacheGraphBatchBytes);
+        graphNumber("cache_graph_plan_cache_entries", param.cacheGraphPlanCacheEntries);
+        for (const auto& key : config.Keys()) {
+            if (key.compare(0, 12, "cache_graph_") == 0 && key != "cache_graph_batch_shards" &&
+                key != "cache_graph_batch_bytes" && key != "cache_graph_plan_cache_entries") {
+                throw std::invalid_argument("unknown transfer graph option: " + key);
+            }
+        }
         return param;
     }
     Status CheckSizeConfig(const Config& config)
@@ -232,6 +258,26 @@ private:
         if (config.localRankSize == 0) {
             return Status::InvalidParam("invalid local rank size({})", config.localRankSize);
         }
+        if (config.cacheTransferGraph) {
+            if (config.cacheIOAggregation || config.useGdr || config.cacheSdmaDirect) {
+                return Status::InvalidParam(
+                    "transfer graph requires ordinary copy streams; aggregation, GDR and SDMA "
+                    "Direct are unsupported");
+            }
+            if (!HasDrainingLoadWait(config.storeBackend)) {
+                return Status::InvalidParam(
+                    "transfer graph backend must advertise terminal Load Wait (strict Posix psync "
+                    "required)");
+            }
+            try {
+                UcmTransferGraph graph;
+                graph.Setup(config.deviceId, config.localRankSize, config.cacheGraphBatchShards,
+                            config.cacheGraphBatchBytes, config.shardSize,
+                            config.cacheGraphPlanCacheEntries);
+            } catch (const std::exception& e) {
+                return Status::InvalidParam(e.what());
+            }
+        }
         return Status::OK();
     }
     void ShowConfig(const Config& config)
@@ -278,6 +324,9 @@ private:
         UC_INFO("Set {}::GpuKvBufferNumber to {}.", ns, config.gpuKvBufferAddrs.size());
         UC_INFO("Set {}::UseGdr to {}.", ns, config.useGdr);
         UC_INFO("Set {}::LocalRankSize to {}.", ns, config.localRankSize);
+        UC_INFO("Set {}::TransferGraph to {} (batch_shards={}, batch_bytes={}, plans={}).", ns,
+                config.cacheTransferGraph, config.cacheGraphBatchShards,
+                config.cacheGraphBatchBytes, config.cacheGraphPlanCacheEntries);
     }
 };
 

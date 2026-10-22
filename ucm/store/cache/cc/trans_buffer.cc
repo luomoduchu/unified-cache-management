@@ -101,7 +101,7 @@ public:
 class LocalBufferStrategy : public BufferStrategy {
     struct BufferHeader {
         size_t buckets[nHashTableBucket];
-        size_t nodeCursor;
+        std::atomic<size_t> nodeCursor;
         size_t nodeSize;
         size_t nNode;
     };
@@ -554,6 +554,7 @@ public:
 Status TransBuffer::Setup(const Config& config)
 {
     bypassHitOnLoad_ = config.cacheLoadBackendOnly;
+    nodeCount_ = config.shardSize ? config.bufferCapacity / config.shardSize : 0;
     try {
         if (!config.shareBufferEnable) {
             auto useDriverMemoryApi = config.useDpc || !config.ioDirect;
@@ -588,6 +589,23 @@ TransBuffer::Handle TransBuffer::Get(const Detail::BlockId& blockId, size_t shar
     iNode = Alloc(blockId, shardIdx, iBucket, allowReserved);
     strategy_->BucketUnlock(iBucket);
     return Handle(this, iNode, true);
+}
+
+TransBuffer::Handle TransBuffer::TryGet(const Detail::BlockId& blockId, size_t shardIdx,
+                                        bool allowReserved, bool isLoad)
+{
+    auto iBucket = Hash(blockId, shardIdx);
+    bool owner = false;
+    if (!strategy_->BucketTryLock(iBucket)) { return {}; }
+    auto iNode = FindAt(iBucket, blockId, shardIdx, owner);
+    if (iNode != invalidIndex) {
+        if (bypassHitOnLoad_ && isLoad && owner && Ready(iNode)) { MarkNotReady(iNode); }
+    } else {
+        iNode = Alloc(blockId, shardIdx, iBucket, allowReserved, std::min(nodeCount_, size_t(64)));
+        owner = true;
+    }
+    strategy_->BucketUnlock(iBucket);
+    return Handle(this, iNode, owner);
 }
 
 void TransBuffer::Prealloc(const Detail::BlockId& blockId, size_t shardIdx, bool allowReserved)
@@ -645,9 +663,9 @@ size_t TransBuffer::FindAt(size_t iBucket, const Detail::BlockId& blockId, size_
 }
 
 size_t TransBuffer::Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_t iBucket,
-                          bool allowReserved)
+                          bool allowReserved, size_t attempts)
 {
-    for (;;) {
+    for (size_t attempt = 0; attempt < attempts; ++attempt) {
         auto iNode = strategy_->FetchNode(allowReserved);
         auto meta = strategy_->MetaAt(iNode);
         strategy_->NodeLock(iNode);
@@ -676,6 +694,7 @@ size_t TransBuffer::Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_
         strategy_->NodeUnlock(iNode);
         return iNode;
     }
+    return invalidIndex;
 }
 
 void TransBuffer::MoveTo(size_t iBucket, size_t iNode)

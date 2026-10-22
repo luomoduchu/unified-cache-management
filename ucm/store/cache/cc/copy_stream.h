@@ -40,6 +40,15 @@ class CopyStream {
     std::vector<std::shared_ptr<Trans::Stream>> streams_;
 
 public:
+    // Internal dependency injection used by executor tests and specialized runtimes.
+    Status Setup(std::shared_ptr<Trans::Stream> stream)
+    {
+        if (!stream) { return Status::InvalidParam("null copy stream"); }
+        streams_ = {std::move(stream)};
+        streamNumber_ = 1;
+        streamIndex_ = 0;
+        return Status::OK();
+    }
     Status Setup(const int32_t deviceId, const size_t streamNumber, const bool useGdr)
     {
         if (streamNumber == 0) { return Status::InvalidParam("invalid stream number"); }

@@ -37,13 +37,16 @@ Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const Spac
     nShardPerBlock_ = config.blockSize / config.shardSize;
     ioDirect_ = config.ioDirect;
     timeoutMs_ = config.timeoutMs;
-    auto success =
-        loadPool_.SetNWorker(config.dataTransConcurrency)
-            .SetWorkerFn([this](auto& ios, auto&) { LoadWorker(ios); })
-            .SetWorkerTimeoutFn([this](IoUnit& ios, ssize_t tid) { OnIoUnitTimeout(ios); },
-                                config.timeoutMs)
-            .SetCpuAffinity(config.cpuAffinityCores)
-            .Run();
+    loadPool_.SetNWorker(config.dataTransConcurrency)
+        .SetWorkerFn([this](auto& ios, auto&) { LoadWorker(ios); })
+        .SetCpuAffinity(config.cpuAffinityCores);
+    // Active psync reads cannot be cancelled safely. In strict mode retain the
+    // worker and lease until it returns; only queued work is logically cancelled.
+    if (!config.strictLoadCompletion || config.ioEngine != "psync") {
+        loadPool_.SetWorkerTimeoutFn([this](IoUnit& ios, ssize_t tid) { OnIoUnitTimeout(ios); },
+                                     config.timeoutMs);
+    }
+    auto success = loadPool_.Run();
     if (!success) [[unlikely]] {
         return Status::Error(fmt::format("workers({}) start failed", config.dataTransConcurrency));
     }

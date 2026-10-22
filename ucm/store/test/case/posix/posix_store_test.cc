@@ -28,6 +28,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -365,6 +366,76 @@ TEST_F(UCPosixStoreTest, AioMissingLoadReturnsNotFound)
     auto handle = store.Load(MakeDumpDesc("AioMissingLoad", block, buffer.get()));
     ASSERT_TRUE(handle.HasValue());
     EXPECT_EQ(store.Wait(handle.Value()), UC::Status::NotFound());
+}
+
+TEST_F(UCPosixStoreTest, LoadWaitCapabilityRequiresSuccessfulStrictPsyncSetup)
+{
+    for (size_t mode : {0, 1, 2}) {
+        UC::PosixStore::PosixStore store;
+        EXPECT_FALSE(UC::HasDrainingLoadWait(&store));
+        auto config = mode == 2 ? MakeAioConfig(Path()) : MakePsyncConfig(Path());
+        config.Set("cache_transfer_graph", mode != 0);
+        config.Set("posix_gc_enable", false);
+        config.SetNumber("posix_data_trans_concurrency", 1);
+        ASSERT_TRUE(store.Setup(config).Success());
+        EXPECT_EQ(UC::HasDrainingLoadWait(&store), mode == 1);
+    }
+}
+
+TEST_F(UCPosixStoreTest, InvalidGraphOptionTypeReturnsStatusWithoutAdvertisingCapability)
+{
+    UC::PosixStore::PosixStore store;
+    auto config = MakePsyncConfig(Path());
+    config.Set("cache_transfer_graph", std::string("true"));
+    auto status = UC::Status::OK();
+    EXPECT_NO_THROW(status = store.Setup(config));
+    EXPECT_EQ(status, UC::Status::InvalidParam());
+    EXPECT_FALSE(UC::HasDrainingLoadWait(&store));
+}
+
+TEST_F(UCPosixStoreTest, StrictPsyncTimeoutWaitsForActiveReadToActuallyReturn)
+{
+    UC::PosixStore::PosixStore store;
+    auto config = MakePsyncConfig(Path());
+    config.Set("cache_transfer_graph", true);
+    config.Set("posix_gc_enable", false);
+    config.SetNumber("timeout_ms", 500);
+    config.SetNumber("posix_data_trans_concurrency", 1);
+    ASSERT_TRUE(store.Setup(config).Success());
+    auto source = MakeAlignedBuffer(0x12345678);
+    auto target = MakeAlignedBuffer(0);
+    const auto block =
+        UC::Test::Detail::TypesHelper::MakeBlockId("0123456789abcdef0123456789abcdef");
+    auto dumped = store.Dump(MakeDumpDesc("StrictSeed", block, source.get()));
+    ASSERT_TRUE(dumped);
+    ASSERT_TRUE(store.Wait(dumped.Value()).Success());
+    std::promise<void> entered, release;
+    auto gate = release.get_future().share();
+    UC::PosixStore::TestHooks::SetPsyncReadHook(
+        [&, gate](int fd, void* buffer, size_t size, off64_t offset) {
+            entered.set_value();
+            gate.wait();
+            return ::pread(fd, buffer, size, offset);
+        });
+    struct ClearHook {
+        ~ClearHook() { UC::PosixStore::TestHooks::ClearPsyncReadHook(); }
+    } clear;
+    auto loaded = store.Load(MakeDumpDesc("StrictBlockedRead", block, target.get()));
+    // No fatal assertion may bypass release while a read is blocked in the hook.
+    EXPECT_TRUE(loaded);
+    if (!loaded) {
+        release.set_value();
+        return;
+    }
+    EXPECT_EQ(entered.get_future().wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    auto waiting = std::async(std::launch::async, [&] { return store.Wait(loaded.Value()); });
+    // Exceed both the logical deadline and the legacy active-worker monitor tick.
+    EXPECT_EQ(waiting.wait_for(std::chrono::milliseconds(1600)), std::future_status::timeout);
+    EXPECT_EQ(*static_cast<size_t*>(target.get()), 0);
+    release.set_value();
+    ASSERT_EQ(waiting.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    EXPECT_EQ(waiting.get(), UC::Status::Timeout());
+    EXPECT_EQ(std::memcmp(source.get(), target.get(), AIO_TEST_DATA_SIZE), 0);
 }
 
 TEST_F(UCPosixStoreTest, PsyncTruncatedLoadReturnsNotFound)

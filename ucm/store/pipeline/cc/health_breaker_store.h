@@ -31,13 +31,14 @@
 #include <string>
 #include <thread>
 #include "health_check_executor.h"
+#include "load_wait_completion.h"
 #include "store_health_config.h"
 #include "store_health_state.h"
 #include "ucmstore_v1.h"
 
 namespace UC::PipelineStore {
 
-class HealthBreakerStore : public StoreV1 {
+class HealthBreakerStore : public StoreV1, public LoadWaitCompletion {
 public:
     HealthBreakerStore() = default;
     ~HealthBreakerStore() override;
@@ -60,6 +61,7 @@ public:
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override;
     Expected<bool> Check(Detail::TaskHandle taskId) override;
     Status Wait(Detail::TaskHandle taskId) override;
+    bool LoadWaitDrains() const noexcept override { return HasDrainingLoadWait(store_); }
 
 private:
     void RecordPassiveResult(const Status& status, uint64_t generation);

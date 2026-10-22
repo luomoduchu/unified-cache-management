@@ -25,6 +25,7 @@
 #include <array>
 #include <cstdint>
 #include <fmt/ranges.h>
+#include "load_wait_completion.h"
 #include "logger/logger.h"
 #include "metrics_api.h"
 #include "posix_file.h"
@@ -35,13 +36,14 @@
 
 namespace UC::PosixStore {
 
-class PosixStore : public StoreV1 {
+class PosixStore : public StoreV1, public LoadWaitCompletion {
     static constexpr size_t kHealthIoSize = 4096;
 
     SpaceManager spaceMgr_;
     TransManager transMgr_;
     bool transEnable_{false};
     bool ioDirect_{false};
+    bool loadWaitDrains_{false};
     const Detail::BlockId healthBlockId_{Detail::RandomBlockId()};
 
     Status CheckPathHealth(const std::string& path)
@@ -69,7 +71,13 @@ class PosixStore : public StoreV1 {
 public:
     Status Setup(const Detail::Dictionary& inConfig) override
     {
-        auto config = ParseConfig(inConfig);
+        loadWaitDrains_ = false;
+        Config config;
+        try {
+            config = ParseConfig(inConfig);
+        } catch (const std::exception& e) {
+            return Status::InvalidParam(e.what());
+        }
         auto s = CheckConfig(config);
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed to check config params: {}.", s);
@@ -84,8 +92,10 @@ public:
             if (s.Failure()) [[unlikely]] { return s; }
         }
         ShowConfig(config);
+        loadWaitDrains_ = transEnable_ && config.ioEngine == "psync" && config.strictLoadCompletion;
         return Status::OK();
     }
+    bool LoadWaitDrains() const noexcept override { return loadWaitDrains_; }
     std::string Readme() const override { return "PosixStore"; }
     Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override
     {
@@ -188,6 +198,7 @@ private:
         inConfig.GetNumber("shard_size", config.shardSize);
         inConfig.GetNumber("block_size", config.blockSize);
         inConfig.Get("posix_io_engine", config.ioEngine);
+        inConfig.Get("cache_transfer_graph", config.strictLoadCompletion);
         inConfig.Get("io_direct", config.ioDirect);
         inConfig.Get("cpu_affinity_cores", config.cpuAffinityCores);
         inConfig.GetNumber("posix_data_trans_concurrency", config.dataTransConcurrency);

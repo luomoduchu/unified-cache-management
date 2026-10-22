@@ -39,6 +39,7 @@ class TransBuffer {
     static constexpr Index npos = std::numeric_limits<Index>::max();
     std::shared_ptr<BufferStrategy> strategy_{nullptr};
     bool bypassHitOnLoad_{false};
+    size_t nodeCount_{0};
 
 public:
     enum class State : uint8_t { LOADING, READY, FAILED };
@@ -111,6 +112,9 @@ public:
     Status Setup(const Config& config);
     Handle Get(const Detail::BlockId& blockId, size_t shardIdx, bool allowReserved = false,
                bool isLoad = false);
+    // A bounded allocation scan. An empty handle means resource pressure; no lease held.
+    Handle TryGet(const Detail::BlockId& blockId, size_t shardIdx, bool allowReserved = false,
+                  bool isLoad = false);
     void Prealloc(const Detail::BlockId& blockId, size_t shardIdx, bool allowReserved = false);
     bool Exist(const Detail::BlockId& blockId, size_t shardIdx);
 
@@ -118,7 +122,7 @@ private:
     bool ExistAt(size_t iBucket, const Detail::BlockId& blockId, size_t shardIdx);
     size_t FindAt(size_t iBucket, const Detail::BlockId& blockId, size_t shardIdx, bool& owner);
     size_t Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_t iBucket,
-                 bool allowReserved = false);
+                 bool allowReserved = false, size_t attempts = std::numeric_limits<size_t>::max());
     void MoveTo(size_t iBucket, size_t iNode);
     void Remove(size_t iBucket, size_t iNode);
     void* DataAt(Index pos);

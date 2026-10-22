@@ -52,6 +52,34 @@ TEST(UCHealthBreakerStoreTest, StoreV1ProvidesHealthyDefault)
     EXPECT_TRUE(base.StoreV1::CheckHealth().Success());
 }
 
+class CompletionCapableStore : public Detail::MockStore, public LoadWaitCompletion {
+public:
+    bool capable{true};
+    bool LoadWaitDrains() const noexcept override { return capable; }
+};
+
+TEST(UCHealthBreakerStoreTest, ForwardsActualLoadWaitCapabilityWithoutBypassingWait)
+{
+    CompletionCapableStore store;
+    HealthBreakerStore breaker;
+    EXPECT_FALSE(HasDrainingLoadWait(&breaker));
+    StoreHealthConfig config;
+    config.enabled = true;
+    config.passiveEnabled = true;
+    ASSERT_TRUE(breaker.Setup(&store, "capable", config).Success());
+    EXPECT_TRUE(HasDrainingLoadWait(&breaker));
+    store.capable = false;
+    EXPECT_FALSE(HasDrainingLoadWait(&breaker));
+    store.capable = true;
+    EXPECT_CALL(store, Wait(7)).WillOnce(Return(Status::Timeout()));
+    EXPECT_EQ(breaker.Wait(7), Status::StoreUnhealthy());
+    EXPECT_TRUE(HasDrainingLoadWait(&breaker));
+    Detail::MockStore unknown;
+    HealthBreakerStore wrapper;
+    ASSERT_TRUE(wrapper.Setup(&unknown, "unknown", config).Success());
+    EXPECT_FALSE(HasDrainingLoadWait(&wrapper));
+}
+
 namespace {
 
 StoreHealthConfig TestConfig()

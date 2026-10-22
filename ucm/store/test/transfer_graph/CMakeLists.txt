@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.18)
+project(ucm_transfer_graph_portable LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+add_executable(transfer_graph_plan_test plan_test.cc)
+target_include_directories(transfer_graph_plan_test PRIVATE ../../../..)
+enable_testing()
+add_test(NAME transfer_graph_plan COMMAND transfer_graph_plan_test)

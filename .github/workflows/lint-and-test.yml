@@ -95,7 +95,16 @@ jobs:
     - uses: actions/checkout@v4
 
     - name: Configure CMake
-      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DBUILD_UCM_SPARSE=OFF -DBUILD_UNIT_TESTS=ON -DRUNTIME_ENVIRONMENT=simu -DBUILD_UCM_ASU=ON
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DBUILD_UCM_SPARSE=OFF -DBUILD_UNIT_TESTS=ON -DRUNTIME_ENVIRONMENT=simu -DBUILD_UCM_ASU=ON -DBUILD_TRANSFER_GRAPH_BENCHMARK=ON
+
+    - name: Metrics configuration regression
+      run: python3 test/test_default_metrics_config.py
+
+    - name: Portable transfer graph plan checks
+      run: |
+        cmake -S ucm/store/test/transfer_graph -B build/graph-plan -DCMAKE_BUILD_TYPE=Release
+        cmake --build build/graph-plan
+        ctest --test-dir build/graph-plan --output-on-failure
 
     - name: Build
       run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} -j
@@ -103,3 +112,13 @@ jobs:
     - name: Test
       working-directory: ${{github.workspace}}/build
       run: ctest -C ${{env.BUILD_TYPE}} --output-on-failure
+
+    - name: Transfer graph executor smoke test
+      timeout-minutes: 5
+      run: |
+        ./build/ucm/store/test/transfer_graph_benchmark "${{ runner.temp }}" 4096 4 4 1 2 50 psync 0 off-on
+        ./build/ucm/store/test/transfer_graph_benchmark "${{ runner.temp }}" 4096 4 4 1 2 50 psync 0 on-off
+
+    - name: Repeat transfer graph concurrency and failure checks
+      timeout-minutes: 5
+      run: ./build/ucm/store/test/ucmstore.test --gtest_filter='GraphQueueTest.*' --gtest_repeat=10 --gtest_break_on_failure

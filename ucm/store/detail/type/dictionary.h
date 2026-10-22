@@ -42,6 +42,13 @@ class Dictionary {
     }
 
 public:
+    std::vector<std::string> Keys() const
+    {
+        std::vector<std::string> keys;
+        keys.reserve(data_.size());
+        for (const auto& item : data_) { keys.push_back(item.first); }
+        return keys;
+    }
     bool Contains(const std::string& key) const { return data_.find(key) != data_.end(); }
     template <typename T>
     void Set(const std::string& key, const T& value)

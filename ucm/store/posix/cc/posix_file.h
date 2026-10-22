@@ -25,9 +25,20 @@
 #define UNIFIEDCACHE_POSIX_STORE_CC_POSIX_FILE_H
 
 #include <fcntl.h>
+#ifdef UCM_ENABLE_TEST_HOOKS
+#include <functional>
+#endif
 #include "status/status.h"
 
 namespace UC::PosixStore {
+
+#ifdef UCM_ENABLE_TEST_HOOKS
+namespace TestHooks {
+using PsyncReadHook = std::function<ssize_t(int, void*, size_t, off64_t)>;
+void SetPsyncReadHook(PsyncReadHook hook);
+void ClearPsyncReadHook();
+}  // namespace TestHooks
+#endif
 
 class PosixFile {
 public:

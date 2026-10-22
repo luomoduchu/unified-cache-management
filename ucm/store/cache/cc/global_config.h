@@ -65,6 +65,10 @@ struct Config {
     bool cacheIOAggregation{false};
     bool cacheSdmaDirect{UCM_RUNTIME_ASCEND_SDMA_DIRECT};
     size_t localRankSize{8};
+    bool cacheTransferGraph{false};
+    size_t cacheGraphBatchShards{32};
+    size_t cacheGraphBatchBytes{8ULL << 20};
+    size_t cacheGraphPlanCacheEntries{32};
 
     size_t EffectiveStreamNumber() const noexcept { return cacheSdmaDirect ? 1 : streamNumber; }
 };

@@ -22,10 +22,31 @@
  * SOFTWARE.
  * */
 #include "posix_file.h"
+#ifdef UCM_ENABLE_TEST_HOOKS
+#include <atomic>
+#include <mutex>
+#endif
 #include <sys/stat.h>
 #include <unistd.h>
 
 namespace UC::PosixStore {
+
+#ifdef UCM_ENABLE_TEST_HOOKS
+namespace {
+std::atomic_bool readHookEnabled{false};
+std::mutex readHookMutex;
+TestHooks::PsyncReadHook readHook;
+}  // namespace
+namespace TestHooks {
+void SetPsyncReadHook(PsyncReadHook hook)
+{
+    std::lock_guard<std::mutex> lock(readHookMutex);
+    readHook = std::move(hook);
+    readHookEnabled.store(bool(readHook), std::memory_order_release);
+}
+void ClearPsyncReadHook() { SetPsyncReadHook({}); }
+}  // namespace TestHooks
+#endif
 
 static constexpr auto NewFilePerm = (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 static constexpr auto NewDirPerm = (S_IRWXU | S_IRWXG | S_IROTH);
@@ -108,7 +129,16 @@ Status PosixFile::Read(void* buffer, size_t size, off64_t offset)
 {
     ssize_t nBytes = -1;
     if (offset != -1) {
+#ifdef UCM_ENABLE_TEST_HOOKS
+        TestHooks::PsyncReadHook hook;
+        if (readHookEnabled.load(std::memory_order_acquire)) {
+            std::lock_guard<std::mutex> lock(readHookMutex);
+            hook = readHook;
+        }
+        nBytes = hook ? hook(handle_, buffer, size, offset) : pread(handle_, buffer, size, offset);
+#else
         nBytes = pread(handle_, buffer, size, offset);
+#endif
     } else {
         nBytes = read(handle_, buffer, size);
     }
