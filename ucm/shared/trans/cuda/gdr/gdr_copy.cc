@@ -538,18 +538,20 @@ private:
         if (kind != GdrMemcpyHostToDevice && kind != GdrMemcpyDeviceToHost) { return -EINVAL; }
         if (bytes > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) { return -E2BIG; }
 
-        const auto beginNs = traceEnabled_ ? TraceNowNs() : 0;
+        const auto prepareStartNs = traceEnabled_ ? TraceNowNs() : 0;
         MrRef gpuMr{};
         MrRef hostMr{};
         if (kind == GdrMemcpyHostToDevice) {
             if (TryGetRegisteredGpuMr(reinterpret_cast<uint64_t>(dst), bytes, &gpuMr) &&
                 TryGetRegisteredHostMr(reinterpret_cast<uint64_t>(src), bytes, &hostMr)) {
-                return PostCopyWithInflightSlot(dst, src, bytes, kind, reqId, hostMr, gpuMr, beginNs);
+                return PostCopyWithInflightSlot(dst, src, bytes, kind, reqId, hostMr, gpuMr,
+                                                prepareStartNs);
             }
         } else {
             if (TryGetRegisteredHostMr(reinterpret_cast<uint64_t>(dst), bytes, &hostMr) &&
                 TryGetRegisteredGpuMr(reinterpret_cast<uint64_t>(src), bytes, &gpuMr)) {
-                return PostCopyWithInflightSlot(dst, src, bytes, kind, reqId, hostMr, gpuMr, beginNs);
+                return PostCopyWithInflightSlot(dst, src, bytes, kind, reqId, hostMr, gpuMr,
+                                                prepareStartNs);
             }
         }
 
@@ -567,11 +569,12 @@ private:
             ReleaseOwnedMr(gpuMr);
             throw;
         }
-        return PostCopyWithInflightSlot(dst, src, bytes, kind, reqId, hostMr, gpuMr, beginNs);
+        return PostCopyWithInflightSlot(dst, src, bytes, kind, reqId, hostMr, gpuMr,
+                                        prepareStartNs);
     }
 
     int PostCopyWithInflightSlot(void* dst, const void* src, size_t bytes, GdrCopyKind kind,
-                                 uint64_t reqId, MrRef hostMr, MrRef gpuMr, uint64_t beginNs)
+                                 uint64_t reqId, MrRef hostMr, MrRef gpuMr, uint64_t prepareStartNs)
     {
         if (!gpuMr.mr || !hostMr.mr) {
             ReleaseOwnedMr(hostMr);
@@ -597,7 +600,7 @@ private:
         slot.fallbackHostMr = hostMr.owned ? hostMr.mr : nullptr;
         slot.fallbackGpuMr = gpuMr.owned ? gpuMr.mr : nullptr;
         if (traceEnabled_) {
-            slot.beginNs = beginNs;
+            slot.prepareStartNs = prepareStartNs;
             slot.bytes = bytes;
             slot.kind = kind;
             slot.postNs = TraceNowNs();
@@ -628,7 +631,7 @@ private:
 
     struct InflightSlot {
         std::atomic<uint64_t> reqId{0};
-        uint64_t beginNs{0};
+        uint64_t prepareStartNs{0};
         uint64_t postNs{0};
         size_t bytes{0};
         GdrCopyKind kind{GdrMemcpyHostToDevice};
@@ -660,9 +663,8 @@ private:
                 "UCM_GDR_TRACE pid={} gpu={} nic={} channel={} req={} dir={} bytes={} "
                 "begin_ns={} post_ns={} done_ns={} fallback_host={} fallback_gpu={}\n",
                 getpid(), gpuId_, nicName_, reinterpret_cast<uintptr_t>(this), reqId,
-                slot.kind == GdrMemcpyHostToDevice ? "H2D" : "D2H", slot.bytes,
-                slot.beginNs, slot.postNs, doneNs,
-                slot.fallbackHostMr != nullptr, slot.fallbackGpuMr != nullptr);
+                slot.kind == GdrMemcpyHostToDevice ? "H2D" : "D2H", slot.bytes, slot.prepareStartNs,
+                slot.postNs, doneNs, slot.fallbackHostMr != nullptr, slot.fallbackGpuMr != nullptr);
             (void)std::fwrite(record.data(), 1, record.size(), stderr);
         }
         ReleaseInflightFallbackMrs(slot);

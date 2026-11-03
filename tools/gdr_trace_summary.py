@@ -56,9 +56,7 @@ def main():
             for line in stream:
                 if "UCM_GDR_TRACE pid=" not in line:
                     continue
-                r = dict(
-                    re.findall(r"(\w+)=(\S+)", line.split("UCM_GDR_TRACE ", 1)[1])
-                )
+                r = dict(re.findall(r"(\w+)=(\S+)", line.split("UCM_GDR_TRACE ", 1)[1]))
                 for field in ("bytes", "begin_ns", "post_ns", "done_ns"):
                     r[field] = int(r[field])
                 if not r["begin_ns"] <= r["post_ns"] <= r["done_ns"]:
