@@ -25,6 +25,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cuda_runtime.h>
 #include <infiniband/verbs.h>
@@ -40,6 +43,20 @@
 #include "logger/logger.h"
 
 namespace {
+
+// Diagnostic tracing is deliberately opt-in: per-WR logging perturbs CQ polling.
+bool TraceEnabled()
+{
+    const auto* value = std::getenv("UCM_GDR_TRACE");
+    return value && std::strcmp(value, "1") == 0;
+}
+
+uint64_t TraceNowNs()
+{
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
 
 constexpr int kIbvPort = 1;
 constexpr int kTargetCqDepth = 4096;
@@ -521,17 +538,18 @@ private:
         if (kind != GdrMemcpyHostToDevice && kind != GdrMemcpyDeviceToHost) { return -EINVAL; }
         if (bytes > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) { return -E2BIG; }
 
+        const auto beginNs = traceEnabled_ ? TraceNowNs() : 0;
         MrRef gpuMr{};
         MrRef hostMr{};
         if (kind == GdrMemcpyHostToDevice) {
             if (TryGetRegisteredGpuMr(reinterpret_cast<uint64_t>(dst), bytes, &gpuMr) &&
                 TryGetRegisteredHostMr(reinterpret_cast<uint64_t>(src), bytes, &hostMr)) {
-                return PostCopyWithInflightSlot(dst, src, bytes, kind, reqId, hostMr, gpuMr);
+                return PostCopyWithInflightSlot(dst, src, bytes, kind, reqId, hostMr, gpuMr, beginNs);
             }
         } else {
             if (TryGetRegisteredHostMr(reinterpret_cast<uint64_t>(dst), bytes, &hostMr) &&
                 TryGetRegisteredGpuMr(reinterpret_cast<uint64_t>(src), bytes, &gpuMr)) {
-                return PostCopyWithInflightSlot(dst, src, bytes, kind, reqId, hostMr, gpuMr);
+                return PostCopyWithInflightSlot(dst, src, bytes, kind, reqId, hostMr, gpuMr, beginNs);
             }
         }
 
@@ -549,11 +567,11 @@ private:
             ReleaseOwnedMr(gpuMr);
             throw;
         }
-        return PostCopyWithInflightSlot(dst, src, bytes, kind, reqId, hostMr, gpuMr);
+        return PostCopyWithInflightSlot(dst, src, bytes, kind, reqId, hostMr, gpuMr, beginNs);
     }
 
     int PostCopyWithInflightSlot(void* dst, const void* src, size_t bytes, GdrCopyKind kind,
-                                 uint64_t reqId, MrRef hostMr, MrRef gpuMr)
+                                 uint64_t reqId, MrRef hostMr, MrRef gpuMr, uint64_t beginNs)
     {
         if (!gpuMr.mr || !hostMr.mr) {
             ReleaseOwnedMr(hostMr);
@@ -578,6 +596,12 @@ private:
         }
         slot.fallbackHostMr = hostMr.owned ? hostMr.mr : nullptr;
         slot.fallbackGpuMr = gpuMr.owned ? gpuMr.mr : nullptr;
+        if (traceEnabled_) {
+            slot.beginNs = beginNs;
+            slot.bytes = bytes;
+            slot.kind = kind;
+            slot.postNs = TraceNowNs();
+        }
         slot.reqId.store(reqId, std::memory_order_release);
 
         int rc = 0;
@@ -604,6 +628,10 @@ private:
 
     struct InflightSlot {
         std::atomic<uint64_t> reqId{0};
+        uint64_t beginNs{0};
+        uint64_t postNs{0};
+        size_t bytes{0};
+        GdrCopyKind kind{GdrMemcpyHostToDevice};
         struct ibv_mr* fallbackHostMr{nullptr};
         struct ibv_mr* fallbackGpuMr{nullptr};
     };
@@ -624,6 +652,19 @@ private:
     {
         auto& slot = inflightSlots_[reqId & kInflightRingMask];
         if (slot.reqId.load(std::memory_order_acquire) != reqId) { return false; }
+        if (traceEnabled_) {
+            const auto doneNs = TraceNowNs();
+            // The normal logger rate-limits messages and may overwrite queued records.
+            // Keep diagnostic records complete by writing synchronously to stderr.
+            const auto record = fmt::format(
+                "UCM_GDR_TRACE pid={} gpu={} nic={} channel={} req={} dir={} bytes={} "
+                "begin_ns={} post_ns={} done_ns={} fallback_host={} fallback_gpu={}\n",
+                getpid(), gpuId_, nicName_, reinterpret_cast<uintptr_t>(this), reqId,
+                slot.kind == GdrMemcpyHostToDevice ? "H2D" : "D2H", slot.bytes,
+                slot.beginNs, slot.postNs, doneNs,
+                slot.fallbackHostMr != nullptr, slot.fallbackGpuMr != nullptr);
+            (void)std::fwrite(record.data(), 1, record.size(), stderr);
+        }
         ReleaseInflightFallbackMrs(slot);
         slot.reqId.store(0, std::memory_order_release);
         return true;
@@ -694,6 +735,7 @@ private:
     struct ibv_qp* qp_{nullptr};
     std::vector<RegisteredMrRange> gpuMrRanges_;
     std::vector<RegisteredMrRange> hostMrRanges_;
+    const bool traceEnabled_{TraceEnabled()};
     int gpuId_{-1};
     std::string nicName_;
     bool isRoce_{false};
