@@ -1,6 +1,6 @@
 # UCM GDR 实现与小 IO 性能分析
 
-日期：2026-11-03。分析基线：`learngdr`，主仓库提交 `8e03c9d85fba6e803fae3824b89444c703066113`，以及本分支新增的 GDR trace。
+日期：2026-11-03。分析基线：`learngdr`，主仓库提交 `8e03c9d85fba6e803fae3824b89444c703066113`，以及本分支新增的 GDR trace。2026-11-04 新增 [Qwen / DeepSeek 实测复核](gdr-model-benchmark-analysis.md)，包含分享页环境、18 条 DeepSeek 原始记录及保存完成等待路径分析。
 
 本文以源码为依据说明实现，以用户提供的数据提出性能假设；没有在目标 H100 服务器上完成性能验证。文中的“小 IO”指单次传输 payload，而不是一个模型请求的输入 token 数。
 
@@ -31,7 +31,7 @@ UCM 这里的 GDR，是用 NIC 的 RDMA 能力搬运本机 Host 内存与 GPU �
 | 最近加远端 NIC | 合计约 37 GB/s，需确认方向、计时和统计范围 |
 | 微基准交叉点 | 小于约 96 KB 时 RDMA 快；大于时 CUDA memcpy 快 |
 | 模型测试 | Qwen3 32B，8k/16k 时 GDR 约提升 20%/10%，32k 约落后 10% |
-| 观察指标 | TTFT、吞吐、TPOT、E2EL、ITL 等；缺少逐项原始值和分位数 |
+| 观察指标 | TTFT、吞吐、TPOT、E2EL、ITL 等；后续逐项数据见模型基准复核，仍缺逐请求时间线和分位数 |
 
 运行配置：
 
