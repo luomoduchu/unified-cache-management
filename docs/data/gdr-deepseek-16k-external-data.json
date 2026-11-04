@@ -6,7 +6,7 @@
     "units": "All latency and duration fields suffixed _ms are milliseconds; throughput is tokens/s except request_throughput (requests/s).",
     "reported_OutputTokenThroughput": "Preserves the original OutputTokenThroughput column; its formula is not verified and it is distinct from Output Token Throughput.",
     "baseline": "Earlier GPU-hit 16K rows remain unchanged in gdr-model-benchmark-data.json.",
-    "environment": "Model DeepSeek-V2-Lite-Chat and TP=2 inherited from the conversation. User confirmed the only change from the earlier GPU-hit scenario was disabling prefix reuse; other service configuration and versions were unchanged. The exact switch/command was not supplied.",
+    "environment": "Model DeepSeek-V2-Lite-Chat and TP=2 inherited from the conversation. User confirmed the only change from the earlier GPU-hit scenario was disabling prefix reuse; other service configuration and versions were unchanged. Subsequently confirmed vLLM 0.27.1, UCM upstream develop (exact SHA not supplied), and --no-enable-prefix-caching.",
     "external_hit_storage_tier": "Not established by external hit rate alone; can include UCM host cache or backend.",
     "matching_rule": "Rows aligned by reported run order; paired total input tokens and external-hit token counts match. Seed and arrival schedule are not supplied."
   },
