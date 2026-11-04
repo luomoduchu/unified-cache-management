@@ -2,6 +2,8 @@
 
 日期：2026-11-04。
 
+后续补充：[18 KiB WR、关闭 GDR 的复制粒度与保存队列分析](gdr-wr-and-ce-baseline-analysis.md)。新分享页报告了累计 WR 和 OFF Cache 指标；下文“缺少 WR 数据”描述的是本页最初的端到端数据集。后续 OFF 的 1.13 s Dump 排队不能用来证明本页 ON 16K 的回退原因。
+
 数据来源：[用户提供的分享页](https://chatgpt.com/share/6aeaa0a9-aa1c-83ec-a2a8-7b13b198c150)，以及本次对话补充的原始表头和硬件信息。已读取分享页全部可见消息，包括 DeepSeek 的 18 条逐次记录、启动命令、UCM 配置，以及 Qwen 的汇总表。**分享页未包含 Qwen 的逐次原始表；Qwen 数值来自页面中已有的 AI 汇总，不能当作已重新审计的原始结果。**
 
 完整数字转录见 [JSON 数据](data/gdr-model-benchmark-data.json)。服务端地址省略，其余 DeepSeek 数据列均保留；字段名依据用户补充的表头映射。其中 `reported_OutputTokenThroughput` 对应无空格的原始列名 `OutputTokenThroughput`，不与后面的整体 `Output Token Throughput` 混用，前者公式尚未核实。代码检查基线为本仓库 `477ceffe3d84c07fb2c32d5ad5df2875cdc8daa2`。目标服务器安装的 UCM commit 未提供，因此下文源码机制需要与服务器版本核对。
@@ -13,7 +15,7 @@
 3. **当前源码中存在可定位的候选阻塞链：慢 D2H → pending dump → `get_finished()` 等待 → 模型 worker 推进受阻。** 这比单纯猜测“小模型计算少”更具体，但仍需要时间线证明它造成了本次回退。
 4. **DeepSeek 32K 同时有常态加速和一次严重慢运行。** 保留全部三轮后，整体完成吞吐约下降 50%；不能直接丢弃第三轮、只报告中位数加速。
 5. **DeepSeek 64K 三轮方向一致，TTFT 平均下降 7.22%、E2EL 下降 7.70%。** 这是当前数据中相对一致的收益，但三轮样本仍不足以证明长期稳定。
-6. **96 KB 是微基准中的单次 IO 交叉点；16K/32K/64K 是请求 token 数。** 本次数据没有 WR 粒度、实际 H2D/D2H 字节数或传输时间线，不能据此实现可靠的大小分流阈值。
+6. **96 KB 是微基准中的单次 IO 交叉点；16K/32K/64K 是请求 token 数。** 本页原始数据没有 WR 粒度、实际 H2D/D2H 字节数或传输时间线。后续新页报告 DeepSeek 平均 WR 为 18 KiB，但仍缺同 workload 的双模式时间线，不能据此实现可靠的大小分流阈值。
 
 ## 2. 测试环境与配置
 

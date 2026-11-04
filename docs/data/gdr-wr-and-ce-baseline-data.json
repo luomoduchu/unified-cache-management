@@ -1,0 +1,89 @@
+{
+  "date": "2026-11-04",
+  "source_url": "https://chatgpt.com/share/6aead877-0038-83ec-bff5-64b0c5f9423c",
+  "provenance": "Values transcribed from the visible shared conversation's assistant tables, except workload tuples explicitly supplied by the user. Original metrics attachments were not independently audited.",
+  "code_baseline": "dc30415d39b4dd9756fcfd144a9abaab6fa1f524",
+  "server_commit": null,
+  "model_service_label": "DeepSeekv2",
+  "model_path_in_launch_command": "/models/DeepSeek-V2-Lite-Chat",
+  "model_field_in_question_json": "Qwen3-32B",
+  "config_supplied_in_question": {
+    "tp": 2,
+    "pp": 1,
+    "kv_dtype": "BF16",
+    "block_size_tokens": 16,
+    "blocks_per_chunk": 1
+  },
+  "gdr_on": {
+    "scope": "Cumulative snapshot after previously described 8K/32K workloads and additional 8K/16K workloads; per-workload deltas unavailable.",
+    "attachment_name_cited_by_page": "粘贴的文本 (1)(20261104-055022).txt",
+    "counter_scope_note": "H2D rank 0 and rank 1 were reported equal. Counts below preserve the page's single reported series and are not multiplied by TP. D2H completion table only reported rank 0.",
+    "h2d": {
+      "reported_wr_count": 7219611,
+      "reported_bytes_decimal_gb_rounded": 133.07,
+      "reported_mean_wr_bytes": 18432,
+      "reported_wr_size_bucket_lower_exclusive_bytes": 16384,
+      "reported_wr_size_bucket_upper_inclusive_bytes": 32768,
+      "completion_by_rank": [
+        {"rank": 0, "mean_us": 38.38, "p50_bucket_us": [10, 20], "p90_bucket_us": [50, 100], "p99_bucket_us": [200, 500]},
+        {"rank": 1, "mean_us": 42.21, "p50_bucket_us": [10, 20], "p90_bucket_us": [100, 200], "p99_bucket_us": [200, 500]}
+      ]
+    },
+    "d2h": {
+      "reported_wr_count": 5664573,
+      "reported_bytes_decimal_gb_rounded": 104.41,
+      "reported_mean_wr_bytes": 18432,
+      "reported_wr_size_bucket_lower_exclusive_bytes": 16384,
+      "reported_wr_size_bucket_upper_inclusive_bytes": 32768,
+      "completion_by_rank": [
+        {"rank": 0, "mean_us": 53.00, "p50_bucket_us": [10, 20], "p90_bucket_us": [100, 200], "p99_bucket_us": [500, 1000]}
+      ]
+    },
+    "completion_timer_start_and_end_verified": false,
+    "measured_wall_clock_bandwidth_gb_s": null
+  },
+  "gdr_off": {
+    "scope": "Cumulative snapshot following four user-specified workloads; no per-workload before/after snapshots available.",
+    "attachment_name_cited_by_page": "粘贴的文本 (1)(20261104-064120).txt",
+    "workload_columns": ["input_len", "output_len", "num_requests", "hit_rate_percent", "concurrency", "seed"],
+    "workloads": [
+      [8192, 128, 16, 90, 16, 140000],
+      [32000, 2, 32, 90, 32, 15590],
+      [32000, 2, 32, 90, 32, 35681],
+      [32000, 2, 32, 90, 32, 29212]
+    ],
+    "load_per_rank": {
+      "cache_bytes": 95551488000,
+      "cache_shards": 4665600,
+      "tasks": 2592,
+      "latency_by_rank": [
+        {"rank": 0, "duration_mean_ms": 39.85, "queue_wait_mean_ms": 18.57, "backend_submit_mean_ms": 9.58, "h2d_sync_mean_ms": 0.0122, "task_bandwidth_mean_gb_s": 1.193},
+        {"rank": 1, "duration_mean_ms": 39.76, "queue_wait_mean_ms": 18.49, "backend_submit_mean_ms": 9.97, "h2d_sync_mean_ms": 0.0121, "task_bandwidth_mean_gb_s": 1.196}
+      ]
+    },
+    "dump_reported_series": {
+      "rank_scope_independently_verified": false,
+      "cache_bytes": 110699827200,
+      "cache_shards": 5405265,
+      "tasks": 10962,
+      "duration_mean_ms": 1147.22,
+      "queue_wait_mean_ms": 1132.20,
+      "mkbuf_mean_ms": 14.70,
+      "prerequisite_wait_mean_ms": 0.205,
+      "backend_submit_mean_ms": 0.238,
+      "backend_wait_mean_ms": 4.325,
+      "task_bandwidth_mean_gb_s": 0.388,
+      "d2h_duration_samples_available": false
+    },
+    "measured_cuda_memcpy_size_bytes": null,
+    "measured_cuda_device_copy_duration_us": null,
+    "measured_wall_clock_bandwidth_gb_s": null
+  },
+  "code_based_inference": {
+    "mla_tensor_payload_bytes": 18432,
+    "store_alignment_bytes": 4096,
+    "aligned_store_shard_bytes": 20480,
+    "cuda_memcpy_payload_if_same_layout_bytes": 18432,
+    "cuda_size_inference_confirmed_by_runtime_trace": false
+  }
+}
