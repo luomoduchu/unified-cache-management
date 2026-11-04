@@ -2,6 +2,8 @@
 
 日期：2026-11-04。源码基线：`dc30415d39b4dd9756fcfd144a9abaab6fa1f524`。
 
+后续用户补充：DeepSeek 16K 仅关闭前缀复用后，HBM 命中 0、外部命中 89.92%，ON 三轮 TTFT 平均改善 26.76%、E2EL 改善 28.37%、总吞吐均值提升 39.40%。详见[模型对比第 3.6 节](gdr-model-benchmark-analysis.md)和[六条原始记录](data/gdr-deepseek-16k-external-data.json)。本页原有 WR/队列快照不与这六轮新测试自动对应；以下运行建议已按缓存路径更新。
+
 依据[新分享页](https://chatgpt.com/share/6aead877-0038-83ec-bff5-64b0c5f9423c)后段关于粒度、GDR metrics 和关闭 GDR 基线的讨论，以及本仓库源码。页面中的原始监控以附件出现；本文采用页面回答展示的计数和表格，**尚未独立取得并审计附件中的完整 Prometheus 原始序列**。下文将页面报告值、源码事实、推断分开，数值转录见 [JSON](data/gdr-wr-and-ce-baseline-data.json)。
 
 ## 1. 结论与证据边界
@@ -188,7 +190,8 @@ MkBuf 包含 buffer 查找、所有权/就绪判断、复制提交循环；旧�
 |---|---|---|
 | Qwen3-32B 8K、16K | ON | 旧页汇总 TTFT 约改善 20.52%、11.33% |
 | Qwen3-32B 32K | OFF | 旧页汇总 ON 的 TTFT 约恶化 14.45% |
-| DeepSeek 16K | OFF | 三轮 ON 的 TTFT/E2EL 均明显回退，HBM 命中约 90% |
+| DeepSeek 16K，旧 GPU 命中组，前缀复用开启 | OFF | 三轮 ON 的 TTFT/E2EL 均明显回退，HBM 命中约 90%、外部 0 |
+| DeepSeek 16K，新外部命中组，前缀复用关闭 | **ON** | 外部命中 89.92%、HBM 0；三轮 TTFT 改善 26.76%、E2EL 改善 28.37% |
 | DeepSeek 32K | 稳定性优先时 OFF | ON 前两轮更快，但第三轮出现严重慢运行 |
 | DeepSeek 64K | ON 作为候选 | 三轮 TTFT 平均改善 7.22%，仍需更多重复验证 |
 
@@ -196,7 +199,7 @@ MkBuf 包含 buffer 查找、所有权/就绪判断、复制提交循环；旧�
 
 ## 7. 性能劣化的位置与下一步优先级
 
-**已经定位的现象：OFF 的 Dump 调度队列积压。尚未定位的因果：ON 相对 OFF 为何增加了此前 DeepSeek 16K 的几秒延迟。** 二者应分开。
+**已经定位的现象：本页旧 OFF 快照的 Dump 调度队列积压。尚未定位的因果：ON 相对 OFF 为何增加了旧 GPU 命中 DeepSeek 16K 的几秒延迟。** 新外部命中 16K 已有明确收益，不能再将回退泛化为模型或长度的固有性质；旧队列快照也不能直接解释新六轮的改善。
 
 当前源码支持的候选传导链为：
 

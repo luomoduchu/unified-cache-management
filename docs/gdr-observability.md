@@ -43,7 +43,7 @@ python tools/gdr_trace_summary.py run-32k.log > summary-32k.json
 
 ## 对当前数据的解释及实验顺序
 
-用户测量：8×H100，GPU/RDMA PCIe 4；最近单 NIC 20 GB/s、最近两 NIC 共享链路合计 25 GB/s、最近+远端合计 37 GB/s。最初描述 Qwen 8k/16k GDR 提升约 20%/10%，32k 落后约 10%。2026-11-04 已读取分享页中的 Qwen 汇总及 DeepSeek 18 条逐次数据，详见 [模型基准复核](gdr-model-benchmark-analysis.md)。不同指标的变化幅度不同，不能把端到端百分比直接换算为 IO 带宽；尤其 DeepSeek 16K 是 HBM 命中约 90%、外部命中 0，必须区分 H2D 读取与 D2H 保存。
+用户测量：8×H100，GPU/RDMA PCIe 4；最近单 NIC 20 GB/s、最近两 NIC 共享链路合计 25 GB/s、最近+远端合计 37 GB/s。最初描述 Qwen 8k/16k GDR 提升约 20%/10%，32k 落后约 10%。2026-11-04 已读取分享页中的 Qwen 汇总及 DeepSeek 18 条逐次数据，随后用户直接补充 6 条外部命中 16K 数据，详见 [模型基准复核](gdr-model-benchmark-analysis.md)。旧 DeepSeek 16K 为 HBM 命中约 90%、外部命中 0；新组只关闭前缀复用，变为 HBM 0、外部命中 89.92%，ON 的 TTFT 改善 26.76%。必须区分缓存来源、H2D 读取和 D2H 保存，不能把端到端百分比直接换算为 IO 带宽。
 
 1. 固定模型、TP、KV dtype、block size、blocks_per_chunk、缓存命中率、并发、stream 数以及 NIC 映射。8k/16k/32k 分别记录热身后短测；保留无 trace 的 GDR 开/关基准。
 2. 看 WR 直方图是否变化。若大小不变而次数增加，96 KiB 分界不能直接解释长度拐点；更值得检查持续带宽瓶颈、排队、CPU 线程竞争及计算与传输重叠。
