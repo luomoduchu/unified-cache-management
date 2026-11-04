@@ -25,6 +25,7 @@
 #include <chrono>
 #include <gtest/gtest.h>
 #include <iostream>
+#include <memory>
 #include <numeric>
 #include <thread>
 #include <unistd.h>
@@ -143,6 +144,50 @@ TEST_F(UCMetricsUT, UpdateCachedMetricAndGet)
     ASSERT_NE(histogram_iter.find("stats3"), histogram_iter.end());
     ASSERT_EQ(HistogramCount(histogram_iter.at("stats3")), 1);
     ASSERT_EQ(histogram_iter.at("stats3").sum, 7.0);
+}
+
+TEST_F(UCMetricsUT, ConcurrentFirstCachedUpdateDoesNotDropSamples)
+{
+    constexpr size_t numThreads = 4;
+    constexpr size_t numMetrics = 4096;
+    const std::string name = "concurrent_first_cached_update";
+    CreateStats(name, "counter");
+    GetAllStatsAndClear();
+
+    // Each handle starts unresolved. Reuse the registered counter so this test
+    // races only cached ID publication, not metric catalog registration.
+    std::vector<std::unique_ptr<CachedMetric>> metrics;
+    metrics.reserve(numMetrics);
+    for (size_t i = 0; i < numMetrics; ++i) {
+        metrics.push_back(std::make_unique<CachedMetric>(name));
+    }
+
+    std::atomic<size_t> ready{0};
+    std::atomic<size_t> completed{0};
+    std::atomic<bool> start{false};
+    std::vector<std::thread> writers;
+    for (size_t i = 0; i < numThreads; ++i) {
+        writers.emplace_back([&] {
+            ready.fetch_add(1, std::memory_order_release);
+            while (!start.load(std::memory_order_acquire)) { std::this_thread::yield(); }
+            for (size_t sample = 0; sample < numMetrics; ++sample) {
+                UpdateStats(*metrics[sample], 1.0);
+                completed.fetch_add(1, std::memory_order_release);
+                // Keep writers on the same cold handle without relying on sleeps.
+                while (completed.load(std::memory_order_acquire) < (sample + 1) * numThreads) {
+                    std::this_thread::yield();
+                }
+            }
+        });
+    }
+    while (ready.load(std::memory_order_acquire) != numThreads) { std::this_thread::yield(); }
+    start.store(true, std::memory_order_release);
+    for (auto& writer : writers) { writer.join(); }
+
+    const auto counters = std::get<0>(GetAllStatsAndClear());
+    ASSERT_EQ(counters.count(name), 1U);
+    EXPECT_DOUBLE_EQ(counters.at(name), static_cast<double>(numThreads * numMetrics));
+    EXPECT_EQ(std::get<0>(GetAllStatsAndClear()).count(name), 0U);
 }
 
 TEST_F(UCMetricsUT, CachedMetricRetriesAfterLateRegistration)

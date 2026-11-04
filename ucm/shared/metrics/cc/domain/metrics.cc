@@ -174,7 +174,12 @@ MetricId Metrics::ResolveCachedMetric(CachedMetric& metric) const
     if (id != INVALID_METRIC_ID) { return id; }
     if (!isInited_.load(std::memory_order_acquire)) { return INVALID_METRIC_ID; }
     auto epoch = registerEpoch_.load(std::memory_order_acquire);
-    if (metric.seenEpoch.load(std::memory_order_acquire) == epoch) { return INVALID_METRIC_ID; }
+    if (metric.seenEpoch.load(std::memory_order_acquire) == epoch) {
+        // Another thread may have published a valid ID after our first load.
+        // The epoch covers successful lookups too, so reload the published ID
+        // instead of treating every lookup at this epoch as a cached miss.
+        return metric.id.load(std::memory_order_acquire);
+    }
     id = ResolveMetricId(metric.name);
     metric.id.store(id, std::memory_order_release);
     metric.seenEpoch.store(epoch, std::memory_order_release);
