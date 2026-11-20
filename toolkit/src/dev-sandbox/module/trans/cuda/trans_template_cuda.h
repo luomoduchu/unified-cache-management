@@ -24,10 +24,13 @@
 #ifndef TRANS_TEMPLATE_CUDA_H
 #define TRANS_TEMPLATE_CUDA_H
 
+#include "cuda_compat.h"
 #include "trans_assert_cuda.h"
 #include "trans_kernel_cuda.h"
 #include "trans_stopwatch.h"
 #include "trans_template.h"
+
+using cuda_compat::MemcpyBatchAsync;
 
 class TransStreamTemplate : public TransTemplate {
 protected:
@@ -151,10 +154,10 @@ protected:
         std::vector<size_t> attrIdxArray(task.src.size(), 0);
         std::vector<size_t> sizeArray(task.src.size(), task.size);
         size_t failureIdx = 0;
-        CUDA_ASSERT(cudaMemcpyBatchAsync(const_cast<void**>(task.dst.data()),
-                                         const_cast<void**>(task.src.data()), sizeArray.data(),
-                                         task.src.size(), attrArray.data(), attrIdxArray.data(),
-                                         attrArray.size(), &failureIdx, task.stream));
+        CUDA_ASSERT(MemcpyBatchAsync(const_cast<void**>(task.dst.data()),
+                                     const_cast<void**>(task.src.data()), sizeArray.data(),
+                                     task.src.size(), attrArray.data(), attrIdxArray.data(),
+                                     attrArray.size(), &failureIdx, task.stream));
         CUDA_ASSERT(cudaEventRecord(task.finish, task.stream));
     }
 
@@ -204,10 +207,10 @@ protected:
         std::vector<size_t> attrIdxArray(task.src.size(), 0);
         std::vector<size_t> sizeArray(task.src.size(), task.size);
         size_t failureIdx = 0;
-        CUDA_ASSERT(cudaMemcpyBatchAsync(const_cast<void**>(task.dst.data()),
-                                         const_cast<void**>(task.src.data()), sizeArray.data(),
-                                         task.src.size(), attrArray.data(), attrIdxArray.data(),
-                                         attrArray.size(), &failureIdx, task.stream));
+        CUDA_ASSERT(MemcpyBatchAsync(const_cast<void**>(task.dst.data()),
+                                     const_cast<void**>(task.src.data()), sizeArray.data(),
+                                     task.src.size(), attrArray.data(), attrIdxArray.data(),
+                                     attrArray.size(), &failureIdx, task.stream));
         CUDA_ASSERT(cudaEventRecord(task.finish, task.stream));
     }
 

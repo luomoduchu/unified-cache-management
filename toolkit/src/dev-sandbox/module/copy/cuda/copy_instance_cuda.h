@@ -30,7 +30,10 @@
 #include <vector>
 #include "copy_buffer.h"
 #include "copy_instance.h"
+#include "cuda_compat.h"
 #include "error_handle_cuda.h"
+
+using cuda_compat::MemcpyBatchAsync;
 
 extern cudaError_t CudaSMCopyBatchAsync(void* src[], void* dst[], size_t size, size_t number,
                                         cudaStream_t stream);
@@ -215,10 +218,10 @@ protected:
         std::vector<size_t> sizeArray(ctx.src.size(), ctx.size);
         size_t failureIdx = 0;
 
-        CUDA_ASSERT(cudaMemcpyBatchAsync(const_cast<void**>(ctx.dst.data()),
-                                         const_cast<void**>(ctx.src.data()), sizeArray.data(),
-                                         ctx.src.size(), attrArray.data(), attrIdxArray.data(),
-                                         attrArray.size(), &failureIdx, ctx.stream));
+        CUDA_ASSERT(MemcpyBatchAsync(const_cast<void**>(ctx.dst.data()),
+                                     const_cast<void**>(ctx.src.data()), sizeArray.data(),
+                                     ctx.src.size(), attrArray.data(), attrIdxArray.data(),
+                                     attrArray.size(), &failureIdx, ctx.stream));
     }
 
 public:
@@ -246,10 +249,10 @@ protected:
         std::vector<size_t> sizeArray(ctx.src.size(), ctx.size);
         size_t failureIdx = 0;
 
-        CUDA_ASSERT(cudaMemcpyBatchAsync(const_cast<void**>(ctx.dst.data()),
-                                         const_cast<void**>(ctx.src.data()), sizeArray.data(),
-                                         ctx.src.size(), attrArray.data(), attrIdxArray.data(),
-                                         attrArray.size(), &failureIdx, ctx.stream));
+        CUDA_ASSERT(MemcpyBatchAsync(const_cast<void**>(ctx.dst.data()),
+                                     const_cast<void**>(ctx.src.data()), sizeArray.data(),
+                                     ctx.src.size(), attrArray.data(), attrIdxArray.data(),
+                                     attrArray.size(), &failureIdx, ctx.stream));
     }
 
 public:

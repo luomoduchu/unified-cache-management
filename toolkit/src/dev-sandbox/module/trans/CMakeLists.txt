@@ -1,5 +1,6 @@
 add_executable(trans trans_main.cc)
-target_include_directories(trans PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(trans PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../common)
 target_link_libraries(trans PRIVATE fmt::fmt)
 if (CUDA_FOUND)
     target_sources(trans PRIVATE
