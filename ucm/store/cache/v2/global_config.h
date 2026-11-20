@@ -71,6 +71,19 @@ struct Config {
      * cache_sdma_direct overrides either way. */
     bool sdmaDirect{UCM_RUNTIME_ASCEND_SDMA_DIRECT};
     bool useGdr{false};
+    /* use_gdr stays a bool for the legacy switch. cache_gdr_mode adds a third
+     * state and wins when it is set: "off" | "on" | "hybrid". Hybrid keeps
+     * useGdr false so the dump path keeps copying through CE, and only the load
+     * path mixes the two engines. */
+    std::string gdrMode{};
+    bool useGdrHybrid{false};
+    /* Channel count of the pure GDR path. One channel is enough: the WQE ring
+     * already supplies the depth, while every extra channel re-registers the
+     * whole buffer registry (MR x N) and adds two busy-polling threads. */
+    size_t gdrStreamNumber{1};
+    /* Measured on H100/200G RoCE at 144 KB: GDR 23.25 GB/s, CE 27.59 GB/s. */
+    double hybridWeightGdr{0.46};
+    double hybridWeightCe{0.54};
     std::vector<uintptr_t> gpuKvBufferAddrs{};
     std::vector<size_t> gpuKvBufferSizes{};
     std::vector<ssize_t> cpuAffinityCores{};
@@ -93,6 +106,34 @@ struct Config {
         constexpr size_t kDefaultSdmaDirectStreams = 16;
         if (sdmaDirect && !streamNumberExplicit) { return kDefaultSdmaDirectStreams; }
         return streamNumber;
+    }
+
+    /* cache_gdr_mode wins over use_gdr when it is set. An unknown value keeps
+     * the legacy bool instead of failing the whole store setup. */
+    void ResolveGdrMode()
+    {
+        if (gdrMode.empty()) { return; }
+        std::string mode;
+        mode.reserve(gdrMode.size());
+        for (const auto c : gdrMode) {
+            if (c >= 'A' && c <= 'Z') {
+                mode.push_back(static_cast<char>(c - 'A' + 'a'));
+            } else {
+                mode.push_back(c);
+            }
+        }
+        if (mode == "hybrid") {
+            useGdr = false;
+            useGdrHybrid = true;
+        } else if (mode == "on" || mode == "true") {
+            useGdr = true;
+            useGdrHybrid = false;
+        } else if (mode == "off" || mode == "false") {
+            useGdr = false;
+            useGdrHybrid = false;
+        } else {
+            UC_WARN("Unknown cache_gdr_mode({}), keeping use_gdr={}.", gdrMode, useGdr);
+        }
     }
 
     static Config From(const Detail::Dictionary& dict)
@@ -122,6 +163,14 @@ struct Config {
         config.streamNumberExplicit = dict.Contains("cache_stream_number");
         dict.Get("cache_sdma_direct", config.sdmaDirect);
         dict.Get("use_gdr", config.useGdr);
+        dict.Get("cache_gdr_mode", config.gdrMode);
+        config.ResolveGdrMode();
+        dict.GetNumber("cache_gdr_stream_number", config.gdrStreamNumber);
+        size_t hybridGdrPercent = 46;
+        dict.GetNumber("cache_hybrid_gdr_percent", hybridGdrPercent);
+        if (hybridGdrPercent == 0 || hybridGdrPercent >= 100) { hybridGdrPercent = 46; }
+        config.hybridWeightGdr = static_cast<double>(hybridGdrPercent) / 100.0;
+        config.hybridWeightCe = 1.0 - config.hybridWeightGdr;
         dict.GetNumbers("gpu_kv_buffer_addrs", config.gpuKvBufferAddrs);
         dict.GetNumbers("gpu_kv_buffer_sizes", config.gpuKvBufferSizes);
         dict.Get("cpu_affinity_cores", config.cpuAffinityCores);
@@ -242,7 +291,8 @@ struct Config {
                 streamNumber);
         UC_INFO("Set {}::CacheSdmaDirect to {}.", ns, sdmaDirect);
         UC_INFO("Set {}::CacheIOAggregation to {}.", ns, ioAggregation);
-        UC_INFO("Set {}::UseGdr to {}.", ns, useGdr);
+        UC_INFO("Set {}::UseGdr to {} (hybrid={}, gdrStreams={}, weights={}:{}).", ns, useGdr,
+                useGdrHybrid, gdrStreamNumber, hybridWeightGdr, hybridWeightCe);
         UC_INFO("Set {}::LocalRankSize to {}.", ns, localRankSize);
         if (detectedNumaNode.has_value()) {
             UC_INFO("Set {}::DetectedNumaNode to {}.", ns, *detectedNumaNode);

@@ -75,6 +75,7 @@ class DumpQ {
     bool sdmaDirect_{false};
     bool ioAggregation_{false};
     bool useGdr_{false};
+    size_t gdrStreamNumber_{1};
     std::vector<size_t> tensorSizes_{};
     std::vector<ssize_t> cpuAffinityCores_{};
     SpscRingQueue<TaskPair> waiting_{};
@@ -98,6 +99,7 @@ public:
         sdmaDirect_ = config.sdmaDirect;
         ioAggregation_ = config.ioAggregation;
         useGdr_ = config.useGdr;
+        gdrStreamNumber_ = config.gdrStreamNumber;
         tensorSizes_ = config.tensorSizes;
         cpuAffinityCores_ = config.cpuAffinityCores;
         waiting_.Setup(config.waitingQueueDepth);
@@ -142,7 +144,7 @@ private:
         } else if (sdmaDirect_) {
             s = stream.SetupSdmaDirect(deviceId_, streamNumber_, useGdr_);
         } else {
-            s = stream.Setup(deviceId_, streamNumber_, useGdr_);
+            s = stream.Setup(deviceId_, useGdr_ ? gdrStreamNumber_ : streamNumber_, useGdr_);
         }
         started.set_value(s);
         if (s.Failure()) [[unlikely]] { return; }

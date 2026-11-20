@@ -82,6 +82,10 @@ class LoadQ {
     bool sdmaDirect_{false};
     bool ioAggregation_{false};
     bool useGdr_{false};
+    bool useGdrHybrid_{false};
+    size_t gdrStreamNumber_{1};
+    double hybridWeightGdr_{0.46};
+    double hybridWeightCe_{0.54};
     size_t localRankSize_{1};
     size_t nShardPerBlock_{0};
     std::vector<size_t> tensorSizes_{};
@@ -108,6 +112,10 @@ public:
         sdmaDirect_ = config.sdmaDirect;
         ioAggregation_ = config.ioAggregation;
         useGdr_ = config.useGdr;
+        useGdrHybrid_ = config.useGdrHybrid;
+        gdrStreamNumber_ = config.gdrStreamNumber;
+        hybridWeightGdr_ = config.hybridWeightGdr;
+        hybridWeightCe_ = config.hybridWeightCe;
         localRankSize_ = config.localRankSize;
         nShardPerBlock_ = config.blockSize / config.shardSize;
         tensorSizes_ = config.tensorSizes;
@@ -269,8 +277,18 @@ private:
             s = stream.SetupIoAggregation(deviceId_, useGdr_);
         } else if (sdmaDirect_) {
             s = stream.SetupSdmaDirect(deviceId_, streamNumber_, useGdr_);
+        } else if (useGdrHybrid_) {
+            s = stream.SetupHybrid(deviceId_, streamNumber_, gdrStreamNumber_,
+                                   hybridWeightGdr_, hybridWeightCe_);
+            if (s.Failure()) [[unlikely]] {
+                // GDR unavailable: keep serving. CE alone still beats GDR alone
+                // at 144 KB, and failing the whole load path would be worse.
+                UC_WARN("Failed({}) to setup hybrid streams on device({}), falling back to ce.",
+                        s, deviceId_);
+                s = stream.Setup(deviceId_, streamNumber_, false);
+            }
         } else {
-            s = stream.Setup(deviceId_, streamNumber_, useGdr_);
+            s = stream.Setup(deviceId_, useGdr_ ? gdrStreamNumber_ : streamNumber_, useGdr_);
         }
         started.set_value(s);
         if (s.Failure()) [[unlikely]] { return; }

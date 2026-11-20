@@ -40,6 +40,11 @@ class CopyStream {
     size_t streamNumber_{0};
     size_t streamIndex_{0};
     std::vector<std::shared_ptr<Trans::Stream>> streams_;
+    /* Hybrid routing state. weights_/inflight_ share streams_' indices and stay
+     * empty on every non-hybrid path, so the existing rotation keeps working. */
+    bool hybrid_{false};
+    std::vector<double> weights_;
+    std::vector<size_t> inflight_;
 
 public:
     Status Setup(const int32_t deviceId, const size_t streamNumber, const bool useGdr = false)
@@ -50,6 +55,9 @@ public:
             UC_ERROR("Failed({}) to setup device({}).", s, deviceId);
             return s;
         }
+        hybrid_ = false;
+        weights_.clear();
+        inflight_.clear();
         streams_.clear();
         streams_.reserve(streamNumber);
         for (size_t i = 0; i < streamNumber; ++i) {
@@ -62,6 +70,60 @@ public:
         }
         deviceId_ = deviceId;
         streamNumber_ = streamNumber;
+        streamIndex_ = 0;
+        return Status::OK();
+    }
+
+    /* CE and GDR side by side, shards routed by weighted in-flight bytes. The
+     * task boundary already drains every stream (Synchronize), so the counters
+     * only have to be cleared there -- no completion callbacks are needed. */
+    Status SetupHybrid(const int32_t deviceId, const size_t ceStreamNumber,
+                       const size_t gdrStreamNumber, const double weightGdr,
+                       const double weightCe)
+    {
+        if (ceStreamNumber == 0 || gdrStreamNumber == 0) {
+            return Status::InvalidParam("hybrid needs both ce({}) and gdr({}) streams",
+                                        ceStreamNumber, gdrStreamNumber);
+        }
+        if (ceStreamNumber + gdrStreamNumber > kMaxStreamNumber) {
+            return Status::InvalidParam("hybrid stream number({}+{}) exceeds {}", ceStreamNumber,
+                                        gdrStreamNumber, kMaxStreamNumber);
+        }
+        if (weightGdr <= 0.0 || weightCe <= 0.0) {
+            return Status::InvalidParam("hybrid weights must be positive({}, {})", weightGdr,
+                                        weightCe);
+        }
+        Trans::Device device;
+        auto s = device.Setup(deviceId);
+        if (s.Failure()) {
+            UC_ERROR("Failed({}) to setup device({}).", s, deviceId);
+            return s;
+        }
+        streams_.clear();
+        weights_.clear();
+        streams_.reserve(ceStreamNumber + gdrStreamNumber);
+        for (size_t i = 0; i < gdrStreamNumber; ++i) {
+            auto stream = device.MakeGdrStream();
+            if (!stream) {
+                UC_ERROR("Failed to make gdr stream on device({}).", deviceId);
+                return Status::Unsupported();
+            }
+            streams_.push_back(std::move(stream));
+            weights_.push_back(weightGdr / static_cast<double>(gdrStreamNumber));
+        }
+        for (size_t i = 0; i < ceStreamNumber; ++i) {
+            auto stream = device.MakeSharedStream();
+            if (!stream) {
+                UC_ERROR("Failed to make stream on device({}).", deviceId);
+                return Status::Error();
+            }
+            streams_.push_back(std::move(stream));
+            weights_.push_back(weightCe / static_cast<double>(ceStreamNumber));
+        }
+        inflight_.assign(streams_.size(), 0);
+        hybrid_ = true;
+        deviceId_ = deviceId;
+        streamNumber_ = streams_.size();
         streamIndex_ = 0;
         return Status::OK();
     }
@@ -83,6 +145,9 @@ public:
             UC_ERROR("Cache IO aggregation is not available on device({}).", deviceId);
             return Status::Unsupported();
         }
+        hybrid_ = false;
+        weights_.clear();
+        inflight_.clear();
         streams_.clear();
         streams_.push_back(std::move(stream));
         deviceId_ = deviceId;
@@ -110,6 +175,9 @@ public:
             UC_ERROR("Failed({}) to setup device({}).", s, deviceId);
             return s;
         }
+        hybrid_ = false;
+        weights_.clear();
+        inflight_.clear();
         streams_.clear();
         streams_.reserve(streamNumber);
         for (size_t i = 0; i < streamNumber; ++i) {
@@ -176,7 +244,7 @@ public:
     Status HostToDeviceScatterAsync(void* host, void** device,
                                     const std::vector<size_t>& sizes) noexcept
     {
-        auto stream = NextStream();
+        auto stream = PickStream(SumSizes(sizes));
         if (!stream) [[unlikely]] { return Status::Error("copy stream is not setup"); }
         auto s = stream->HostToDeviceAsync(host, device, sizes);
         if (s.Failure()) [[unlikely]] { SyncAfterFailure(*stream); }
@@ -186,7 +254,7 @@ public:
     Status DeviceToHostGatherAsync(void** device, void* host,
                                    const std::vector<size_t>& sizes) noexcept
     {
-        auto stream = NextStream();
+        auto stream = PickStream(SumSizes(sizes));
         if (!stream) [[unlikely]] { return Status::Error("copy stream is not setup"); }
         auto s = stream->DeviceToHostAsync(device, host, sizes);
         if (s.Failure()) [[unlikely]] { SyncAfterFailure(*stream); }
@@ -214,6 +282,11 @@ public:
             UC_ERROR("Failed({}) to synchronize stream on device({}).", s, deviceId_);
             if (status.Success()) { status = s; }
         }
+        /* Every task ends with a full drain, so the routing counters restart
+         * from zero here. A failed synchronize is terminal for the task and the
+         * caller re-drains, so clearing anyway is safe: the counters are only a
+         * scheduling hint, never a correctness input. */
+        ResetInflight();
         return status;
     }
 
@@ -237,6 +310,41 @@ private:
         auto& stream = streams_[streamIndex_];
         streamIndex_ = (streamIndex_ + 1) % streamNumber_;
         return stream;
+    }
+
+    static size_t SumSizes(const std::vector<size_t>& sizes) noexcept
+    {
+        size_t total = 0;
+        for (const auto size : sizes) { total += size; }
+        return total;
+    }
+
+    void ResetInflight() noexcept
+    {
+        for (auto& bytes : inflight_) { bytes = 0; }
+    }
+
+    /* Weighted earliest-finish: the score is the bytes this channel would be
+     * holding, so a channel with twice the weight takes twice the bytes before
+     * it looks loaded. This converges to the split measured on the hardware
+     * (GDR 46 : CE 54), whereas a "GDR first, spill to CE" threshold would
+     * hard-code the wrong priority: at 144 KB CE is the faster engine
+     * (27.59 vs 23.25 GB/s), and both share one per-GPU PCIe ceiling anyway. */
+    std::shared_ptr<Trans::Stream> PickStream(const size_t bytes) noexcept
+    {
+        if (streamNumber_ == 0) [[unlikely]] { return nullptr; }
+        if (!hybrid_) { return NextStream(); }
+        size_t best = 0;
+        double bestScore = 0.0;
+        for (size_t i = 0; i < streamNumber_; ++i) {
+            const double score = static_cast<double>(inflight_[i] + bytes) / weights_[i];
+            if (i == 0 || score < bestScore) {
+                bestScore = score;
+                best = i;
+            }
+        }
+        inflight_[best] += bytes;
+        return streams_[best];
     }
 };
 
