@@ -21,6 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <cstdio>
 #include <cuda_runtime.h>
 #include "cuda_buffer.h"
 #include "cuda_sm_stream.h"
@@ -29,6 +30,7 @@
 
 #if UCM_ENABLE_GDR_STREAM
 #include "gdr/gdr_stream.h"
+#include "logger/logger.h"
 #endif
 
 namespace UC::Trans {
@@ -86,11 +88,24 @@ std::unique_ptr<Stream> Device::MakeGdrStream()
     try {
         stream = std::make_unique<GdrStream>();
     } catch (...) {
+        UC_WARN("Failed to construct GDR stream.");
         return nullptr;
     }
-    if (stream->Setup().Success()) { return stream; }
-#endif
+    /* Setup()'s Status is the only place the reason survives -- it names the NIC
+     * that was tried. Returning a bare nullptr here made a missing /dev/infiniband
+     * look exactly like a build without GDR support. */
+    auto s = stream->Setup();
+    if (s.Success()) { return stream; }
+    UC_WARN("Failed({}) to setup GDR stream.", s);
     return nullptr;
+#else
+    /* Dependency-free on purpose: this target links fmt but not the logger, and
+     * a default (GDR-off) build still has to explain why the stream is missing. */
+    std::fprintf(stderr,
+                 "[UC][W] GDR stream support is not built in "
+                 "(UCM_ENABLE_GDR_STREAM=0).\n");
+    return nullptr;
+#endif
 }
 
 std::unique_ptr<Stream> Device::MakeSMStream()
