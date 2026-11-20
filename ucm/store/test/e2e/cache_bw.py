@@ -37,6 +37,11 @@ MODEL_PROFILES = {
 
 LOAD_DURATION = "cache_load_duration_ms"
 LOAD_BYTES = "cache_load_bytes_total"
+# The C++ queue already exports per-shard submit and sync latencies. Reading them
+# is how the per-shard fixed cost gets split between the CUDA submission itself and
+# everything around it (queue hand-off, state check, bookkeeping).
+H2D_SUBMIT = "cache_h2d_submit_ms"
+H2D_SYNC = "cache_h2d_sync_ms"
 
 
 def positive_int(text):
@@ -380,11 +385,24 @@ class LoadMetrics:
     duration_ms: float
     byte_count: int
     bucket_counts: tuple[int, ...]
+    submit_ms: float = 0.0
+    submit_count: int = 0
+    sync_ms: float = 0.0
+    sync_count: int = 0
 
     @property
     def count(self):
         # C++ returns disjoint bucket counts, not Prometheus cumulative buckets.
         return sum(self.bucket_counts)
+
+
+def read_histogram(histograms, name):
+    """Return (sum, sample_count) for one histogram delta, or (0.0, 0)."""
+    entry = histograms.get(name)
+    if not entry:
+        return 0.0, 0
+    buckets, total = entry
+    return float(total), sum(int(count) for count in buckets)
 
 
 def collect_load_metrics(
@@ -400,6 +418,10 @@ def collect_load_metrics(
     counts = [0] * len(bounds)
     total_ms = 0.0
     byte_count = 0
+    submit_ms = 0.0
+    submit_count = 0
+    sync_ms = 0.0
+    sync_count = 0
     deadline = time.monotonic() + timeout_ms / 1000
     while True:
         counters, _, histograms = metrics.get_all_stats_and_clear()
@@ -407,6 +429,12 @@ def collect_load_metrics(
             raise RuntimeError(
                 "cache-hit run submitted backend reads; prefilled data is not fully resident"
             )
+        submit_delta, submit_n = read_histogram(histograms, H2D_SUBMIT)
+        submit_ms += submit_delta
+        submit_count += submit_n
+        sync_delta, sync_n = read_histogram(histograms, H2D_SYNC)
+        sync_ms += sync_delta
+        sync_count += sync_n
         if LOAD_DURATION in histograms:
             buckets, duration_ms = histograms[LOAD_DURATION]
             if len(buckets) != len(bounds) or any(
@@ -435,7 +463,15 @@ def collect_load_metrics(
         if count == expected_tasks and byte_count == expected_bytes:
             if not math.isfinite(total_ms) or total_ms <= 0:
                 raise RuntimeError("invalid C++ load duration sum")
-            return LoadMetrics(total_ms, byte_count, tuple(counts))
+            return LoadMetrics(
+                total_ms,
+                byte_count,
+                tuple(counts),
+                submit_ms,
+                submit_count,
+                sync_ms,
+                sync_count,
+            )
         if time.monotonic() >= deadline:
             raise RuntimeError(
                 f"incomplete load metrics: tasks={count}/{expected_tasks} "
@@ -629,6 +665,12 @@ def load_worker(args, workload, run_id, rank, barrier, results):
         requests *= records
     # The C++ API returns and clears interval deltas, not cumulative snapshots.
     # Discard prefill/init data; each warmup is collected but never saved below.
+    # Attribution accumulates measured epochs only, so it describes the reported run.
+    measured_ms = 0.0
+    measured_shards = 0
+    submit_ms_total = 0.0
+    submit_samples = 0
+    sync_ms_total = 0.0
     metrics.get_all_stats_and_clear()
     for record, request in enumerate(requests):
         barrier.wait()
@@ -653,9 +695,17 @@ def load_worker(args, workload, run_id, rank, barrier, results):
         )
         if not warmup:
             save_result(results, rank * args.epochs + epoch, sample, costs)
+            measured_ms += sample.duration_ms
+            measured_shards += sample.count
+            submit_ms_total += sample.submit_ms
+            submit_samples += sample.submit_count
+            sync_ms_total += sample.sync_ms
         barrier.wait()
         if args.epoch_interval_ms and record + 1 < records:
             time.sleep(args.epoch_interval_ms / 1000)
+    print_submit_attribution(
+        rank, measured_ms, measured_shards, submit_ms_total, submit_samples, sync_ms_total
+    )
 
 
 def worker_entry(phase, args, workload, run_id, rank, barrier, results):
@@ -757,6 +807,26 @@ def print_sample(phase, rank, epoch, sample, bounds, api_costs):
         f"request_cost={sample.duration_ms:.3f}ms "
         f"bw={sample.byte_count / sample.duration_ms / 1e6:.3f}GB/s "
         f"api_request_cost={sum(api_costs) * 1e3:.3f}ms",
+        flush=True,
+    )
+
+
+def print_submit_attribution(rank, total_ms, shards, submit_ms, submit_n, sync_ms):
+    """Split the per-shard cost into the CUDA submit call and everything around it.
+
+    Only printed when the C++ side exported the submit histogram, so an older
+    install stays silent instead of printing zeroes.
+    """
+    if not submit_n or shards <= 0 or total_ms <= 0:
+        return
+    shard_us = total_ms * 1e3 / shards
+    submit_us = submit_ms * 1e3 / submit_n
+    other_us = shard_us - submit_us - sync_ms * 1e3 / shards
+    print(
+        f"submit-attribution rank={rank:02} shards={shards} "
+        f"shard_mean_us={shard_us:.3f} submit_mean_us={submit_us:.3f} "
+        f"submit_share={submit_ms / total_ms * 100:.1f}% "
+        f"other_mean_us={other_us:.3f}",
         flush=True,
     )
 
