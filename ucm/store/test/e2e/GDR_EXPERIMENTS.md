@@ -15,8 +15,24 @@
 ```bash
 git clone -b GDRchange https://github.com/luomoduchu/unified-cache-management.git
 cd unified-cache-management
-# 沿用你原来的构建命令，确认带 -DENABLE_GDR=1（即 UCM_ENABLE_GDR_STREAM=ON）
+
+# GDR 是编译期开关，默认 OFF（CMakeLists.txt:17），而且它读的是**环境变量**
+# ENABLE_GDR（setup.py:48），不是 CMake 参数 —— 传 -DENABLE_GDR=1 不会生效。
+# setup.py 会把它转成 -DUCM_ENABLE_GDR_STREAM=ON。
+ENABLE_GDR=1 pip install -e . --no-build-isolation
 ```
+
+两个前置条件：
+
+- 缺 `libibverbs` 开发包时 CMake 直接 `FATAL_ERROR`（`CMakeLists.txt:29`）：
+  `apt install libibverbs-dev librdmacm-dev`
+- 构建完必须确认 GDR 真编进去了。跑起来后日志里**不能**出现这两行：
+  `[UC][W] GDR stream support is not built in (UCM_ENABLE_GDR_STREAM=0).`
+  `[UC][W] Failed(-50008) to setup hybrid streams on device(0), falling back to ce.`
+  而应出现：
+  `[UC][I] Enable GDR stream on device(0) with nic(mlx5_4).`
+
+  只看 dry-run 或 `--verify` 通过是不够的：GDR 没编进去时 hybrid 会静默降级成纯 CE，实验照跑，测的是别的东西。
 
 ### 0.2 三条自检
 
@@ -47,6 +63,25 @@ grep "ShardSize" <ucm日志>
 ```
 
 **必须是 144 KB（147456）**，否则 46:54 的分流权重不成立（见 §3.3）。TP 或模型一变，shard 大小就会变。
+
+**④ 大页：影响绝对值，不影响 A/B**
+
+Cache buffer 走 `hugetlb-auto`，取不到大页时会退到 4 KiB 基础页，日志里是这样：
+
+```
+[UC][W] memfd 1GiB HugeTLB setup failed, falling back to 2MiB HugeTLB: ... errno=12
+[UC][W] memfd 2MiB HugeTLB setup failed, falling back to base pages: ... errno=12
+[UC][I] memfd page backing ready: ... actual=base page_bytes=4096
+```
+
+4 KiB 页会让 32 GB buffer 花 ~19 s 建页，而且拷贝时 TLB 压力大，实测 CE 会从 27.6 掉到 25.9 GB/s。
+三个引擎同样受影响，所以比相对收益没问题；但要对上工具包的绝对值，就先把大页留出来：
+
+```bash
+echo 2048 | sudo tee /proc/sys/vm/nr_hugepages   # 2 MiB × 2048 = 4 GiB
+```
+
+配套把 `--cache-capacity-gb 32` 降到 `2`：512 block × 144 KB 只有 72 MB，32 GB 纯属浪费。
 
 ---
 
