@@ -291,6 +291,38 @@ class CacheBandwidthTest(unittest.TestCase):
         self.assertTrue(config["cache_io_aggregation"])
         self.assertFalse(config["cache_sdma_direct"])
 
+    def test_gdr_and_hybrid_copy_switches(self):
+        args, workload = self.parse("cache-hit", "--cache-copy", "gdr")
+        config = bw.store_config(args, workload, "run", 0)
+        self.assertTrue(config["use_gdr"])
+        self.assertFalse(config["cache_sdma_direct"])
+        self.assertFalse(config["cache_io_aggregation"])
+        # Omitted on purpose: the store keeps its own GDR channel default.
+        self.assertNotIn("cache_gdr_stream_number", config)
+
+        args.cache_gdr_streams = 1
+        args.cache_copy = "hybrid"
+        config = bw.store_config(args, workload, "run", 0)
+        self.assertEqual(config["cache_gdr_mode"], "hybrid")
+        self.assertEqual(config["cache_gdr_stream_number"], 1)
+        self.assertEqual(config["cache_hybrid_gdr_percent"], 46)
+        # hybrid keeps use_gdr false so the dump side stays on CE.
+        self.assertFalse(config["use_gdr"])
+
+    def test_hybrid_percent_bounds(self):
+        with self.assertRaises(SystemExit):
+            self.parse(
+                "cache-hit", "--cache-copy", "hybrid", "--hybrid-gdr-percent", "0"
+            )
+        with self.assertRaises(SystemExit):
+            self.parse(
+                "cache-hit", "--cache-copy", "hybrid", "--hybrid-gdr-percent", "100"
+            )
+        with self.assertRaises(SystemExit):
+            self.parse(
+                "cache-hit", "--cache-copy", "hybrid", "--cache-gdr-streams", "33"
+            )
+
     def test_posix_seed_and_load_have_distinct_domains_but_identical_files(self):
         args, workload = self.parse("posix-hit")
         seed = bw.store_config(args, workload, "run", 2, seed=True)

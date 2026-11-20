@@ -111,9 +111,26 @@ def parse_args(argv=None):
         help="total Cache capacity across workers in GiB",
     )
     parser.add_argument(
-        "--cache-copy", choices=("auto", "plain", "aggregation", "sdma"), default="auto"
+        "--cache-copy",
+        choices=("auto", "plain", "aggregation", "sdma", "gdr", "hybrid"),
+        default="auto",
+        help=(
+            "plain/aggregation/sdma are the Ascend paths; gdr selects the plain "
+            "GDR copy path, hybrid mixes GDR with CE on the load path"
+        ),
     )
     parser.add_argument("--cache-streams", type=positive_int)
+    parser.add_argument(
+        "--cache-gdr-streams",
+        type=positive_int,
+        help="GDR channel count; omitted keeps the store default",
+    )
+    parser.add_argument(
+        "--hybrid-gdr-percent",
+        type=positive_int,
+        default=46,
+        help="share of load bytes routed to GDR in --cache-copy hybrid (default: 46)",
+    )
     parser.add_argument(
         "--cache-numa-nodes", help="one NUMA node per worker; omitted: rank slicing"
     )
@@ -192,6 +209,10 @@ def validate(args, workload):
         raise ValueError("warmup and epoch interval must be non-negative")
     if args.cache_streams is not None and args.cache_streams > 32:
         raise ValueError("cache streams must be in [1, 32]")
+    if args.cache_gdr_streams is not None and args.cache_gdr_streams > 32:
+        raise ValueError("GDR streams must be in [1, 32]")
+    if not 1 <= args.hybrid_gdr_percent <= 99:
+        raise ValueError("hybrid GDR percent must be in [1, 99]")
     if args.mode == "posix-hit" and args.posix_engine == "aio" and not args.direct_io:
         raise ValueError("Posix aio requires --direct-io")
     nodes = args.cache_numa_nodes
@@ -297,8 +318,18 @@ def store_config(args, workload, run_id, rank, *, seed=False):
     if args.cache_copy != "auto":
         config["cache_sdma_direct"] = args.cache_copy == "sdma"
         config["cache_io_aggregation"] = args.cache_copy == "aggregation"
+        # GDR is mutually exclusive with the two Ascend paths above, so both
+        # stay false here. hybrid keeps use_gdr false: the store derives the
+        # mode from cache_gdr_mode and leaves the dump side on CE.
+        if args.cache_copy in ("gdr", "hybrid"):
+            config["use_gdr"] = args.cache_copy == "gdr"
+            if args.cache_copy == "hybrid":
+                config["cache_gdr_mode"] = "hybrid"
+                config["cache_hybrid_gdr_percent"] = args.hybrid_gdr_percent
     if args.cache_streams is not None:
         config["cache_stream_number"] = args.cache_streams
+    if args.cache_gdr_streams is not None:
+        config["cache_gdr_stream_number"] = args.cache_gdr_streams
     return config
 
 
@@ -800,6 +831,10 @@ def describe(args, workload):
         "cache_local_rank_size": config["local_rank_size"],
         "cache_copy": args.cache_copy,
         "cache_streams": args.cache_streams,
+        "cache_gdr_streams": args.cache_gdr_streams,
+        "hybrid_gdr_percent": (
+            args.hybrid_gdr_percent if args.cache_copy == "hybrid" else None
+        ),
         "numa_nodes": args.cache_numa_nodes or "rank-slice; no CPU affinity",
         "warmup_requests": args.warmup,
         "measured_requests": args.epochs,
