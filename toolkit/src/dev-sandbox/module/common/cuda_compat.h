@@ -25,85 +25,42 @@
 #define CUDA_COMPAT_H
 
 #include <cstddef>
-#include <cstdio>
 #include <cuda_runtime.h>
 
-#if defined(CUDART_VERSION) && (CUDART_VERSION < 12080)
-#error "dev-sandbox CUDA copy cases require CUDA 12.8 or newer (cudaMemcpyAttributes)."
+#if !defined(CUDART_VERSION) || (CUDART_VERSION < 12080)
+#error "dev-sandbox CUDA copy cases require CUDA 12.8 or newer (cudaMemcpyBatchAsync)."
 #endif
 
 namespace cuda_compat {
 
-/* cudaMemcpyBatchAsync arrived in CUDA 12.8 as
- *   (dsts, srcs, sizes, count, attrs, attrsIdxs, numAttrs, failIdx, stream)
- * and that prototype did not survive the next major release -- CUDA 13 rejects
- * the call with "no matching function for call". Every batch memcpy in this
- * project goes through this wrapper so the version pin lives in one place.
+/* cudaMemcpyBatchAsync changed shape between CUDA 12.8 and CUDA 13:
  *
- * For a CUDA version whose native form is not pinned here the copies run as a
- * plain per-copy loop. That keeps the tool buildable, but it is not the same
- * thing being measured: cudaMemcpyAttributes carries a weak-consistency /
- * overlap-with-compute hint that a bare cudaMemcpyAsync cannot express, so the
- * fallback says so once on stderr instead of silently turning a "BatchCE" row
- * into a plain CE row.
+ *   12.8 : (void** dsts, void** srcs, size_t* sizes, size_t count,
+ *           cudaMemcpyAttributes* attrs, size_t* attrsIdxs, size_t numAttrs,
+ *           size_t* failIdx, cudaStream_t stream)
  *
- * Unpinning a newer release is a one-line change: add its CUDART_VERSION range
- * to the condition below once the prototype in <cuda_runtime_api.h> is known. */
-#if defined(CUDART_VERSION) && (CUDART_VERSION >= 12080) && (CUDART_VERSION < 13000)
-#define CUDA_COMPAT_BATCH_MEMCPY_NATIVE 1
-#else
-#define CUDA_COMPAT_BATCH_MEMCPY_NATIVE 0
-#endif
-
-inline void WarnBatchMemcpyFallbackOnce()
-{
-    static bool warned = false;
-    if (warned) { return; }
-    warned = true;
-    std::fprintf(stderr,
-                 "[dev-sandbox] cudaMemcpyBatchAsync is not pinned for CUDART_VERSION=%d; batch "
-                 "cases fall back to a per-copy loop and their numbers are not batched-enqueue "
-                 "numbers.\n",
-                 static_cast<int>(CUDART_VERSION));
-}
-
-/* The fallback cannot recover the transfer direction from the argument list, so
- * take it from the location hints the call sites already set. Returning
- * cudaMemcpyDefault when the hints are absent keeps the copy correct under
- * unified addressing instead of guessing a direction. */
-inline cudaMemcpyKind InferCopyKind(const cudaMemcpyAttributes* attrs, size_t numAttrs)
-{
-    if (attrs == nullptr || numAttrs == 0) { return cudaMemcpyDefault; }
-    const auto src = attrs[0].srcLocHint.type;
-    const auto dst = attrs[0].dstLocHint.type;
-    if ((src == cudaMemLocationTypeHost) && (dst == cudaMemLocationTypeDevice)) {
-        return cudaMemcpyHostToDevice;
-    }
-    if ((src == cudaMemLocationTypeDevice) && (dst == cudaMemLocationTypeHost)) {
-        return cudaMemcpyDeviceToHost;
-    }
-    return cudaMemcpyDefault;
-}
-
-/* Same parameter list as CUDA 12.8 so call sites stay readable. */
+ *   13.x : (void* const* dsts, const void* const* srcs, const size_t* sizes, size_t count,
+ *           cudaMemcpyAttributes* attrs, size_t* attrsIdxs, size_t numAttrs,
+ *           cudaStream_t stream)
+ *
+ * CUDA 13 dropped the failIdx out-parameter and const-qualified the pointer
+ * arrays. Both forms are called natively -- there is no degraded path, so a
+ * future release that reshapes the call again fails to compile instead of
+ * quietly measuring something else.
+ *
+ * The wrapper keeps the 12.8 parameter list so the four call sites read the
+ * same on every CUDA version. CUDA 13 cannot report a failing index, so
+ * failIdx is left untouched there. */
 inline cudaError_t MemcpyBatchAsync(void* dsts[], void* srcs[], size_t sizes[], size_t count,
                                     cudaMemcpyAttributes attrs[], size_t attrsIdxs[],
                                     size_t numAttrs, size_t* failIdx, cudaStream_t stream)
 {
-#if CUDA_COMPAT_BATCH_MEMCPY_NATIVE
+#if CUDART_VERSION >= 13000
+    (void)failIdx;
+    return ::cudaMemcpyBatchAsync(dsts, srcs, sizes, count, attrs, attrsIdxs, numAttrs, stream);
+#else
     return ::cudaMemcpyBatchAsync(dsts, srcs, sizes, count, attrs, attrsIdxs, numAttrs, failIdx,
                                   stream);
-#else
-    const auto kind = InferCopyKind(attrs, numAttrs);
-    WarnBatchMemcpyFallbackOnce();
-    for (size_t i = 0; i < count; ++i) {
-        const auto status = ::cudaMemcpyAsync(dsts[i], srcs[i], sizes[i], kind, stream);
-        if (status != cudaSuccess) {
-            if (failIdx != nullptr) { *failIdx = i; }
-            return status;
-        }
-    }
-    return cudaSuccess;
 #endif
 }
 
