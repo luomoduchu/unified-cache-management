@@ -667,7 +667,7 @@ def load_worker(args, workload, run_id, rank, barrier, results):
     # Discard prefill/init data; each warmup is collected but never saved below.
     # Attribution accumulates measured epochs only, so it describes the reported run.
     measured_ms = 0.0
-    measured_shards = 0
+    measured_tasks = 0
     submit_ms_total = 0.0
     submit_samples = 0
     sync_ms_total = 0.0
@@ -696,7 +696,7 @@ def load_worker(args, workload, run_id, rank, barrier, results):
         if not warmup:
             save_result(results, rank * args.epochs + epoch, sample, costs)
             measured_ms += sample.duration_ms
-            measured_shards += sample.count
+            measured_tasks += sample.count
             submit_ms_total += sample.submit_ms
             submit_samples += sample.submit_count
             sync_ms_total += sample.sync_ms
@@ -704,7 +704,13 @@ def load_worker(args, workload, run_id, rank, barrier, results):
         if args.epoch_interval_ms and record + 1 < records:
             time.sleep(args.epoch_interval_ms / 1000)
     print_submit_attribution(
-        rank, measured_ms, measured_shards, submit_ms_total, submit_samples, sync_ms_total
+        rank,
+        measured_ms,
+        measured_tasks,
+        args.blocks * workload.shards,
+        submit_ms_total,
+        submit_samples,
+        sync_ms_total,
     )
 
 
@@ -811,19 +817,25 @@ def print_sample(phase, rank, epoch, sample, bounds, api_costs):
     )
 
 
-def print_submit_attribution(rank, total_ms, shards, submit_ms, submit_n, sync_ms):
+def print_submit_attribution(rank, total_ms, tasks, shards_per_task, submit_ms, submit_n,
+                             sync_ms):
     """Split the per-shard cost into the CUDA submit call and everything around it.
+
+    ``cache_load_duration_ms`` has one sample per Load call, while
+    ``cache_h2d_submit_ms`` has one per shard, so the shard count has to come from
+    the workload rather than from the duration histogram.
 
     Only printed when the C++ side exported the submit histogram, so an older
     install stays silent instead of printing zeroes.
     """
-    if not submit_n or shards <= 0 or total_ms <= 0:
+    if not submit_n or tasks <= 0 or shards_per_task <= 0 or total_ms <= 0:
         return
+    shards = tasks * shards_per_task
     shard_us = total_ms * 1e3 / shards
     submit_us = submit_ms * 1e3 / submit_n
     other_us = shard_us - submit_us - sync_ms * 1e3 / shards
     print(
-        f"submit-attribution rank={rank:02} shards={shards} "
+        f"submit-attribution rank={rank:02} tasks={tasks} shards={shards} "
         f"shard_mean_us={shard_us:.3f} submit_mean_us={submit_us:.3f} "
         f"submit_share={submit_ms / total_ms * 100:.1f}% "
         f"other_mean_us={other_us:.3f}",
