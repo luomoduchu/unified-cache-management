@@ -75,6 +75,19 @@ python ucm/store/test/e2e/cache_bw.py \
 
 检查输出里的 `shard_size` 是否为 `147456`、`cache_copy` 是否为 `hybrid`、`hybrid_gdr_percent` 是否为 `46`。
 
+**三个容易误读的字段**（我第一遍就读错了）：
+
+- `load_tasks_per_request: 1` 是**每请求的 API 调用次数**，不是"每 task 只有 1 个 shard"。
+  一次 `Load()` 调用对应**一个 shard index**（`shard_index` 是按 block 给的：`[shard] * len(ids)`，
+  见 `cache_bw.py:513` 与 vLLM 连接器 `ucm_connector.py:3101`）。
+- **真正的并发度由 `--blocks` 决定**：一次调用把 512 个 block 的同一 shard 打包成**一个 task**，
+  C++ 侧 `task->desc.size()` = 512，且 waiter 只挂在最后一个 shard 上
+  （`load_queue.h:209`），所以平均在途 ≈ 512，远超分流需要的 2。
+- **`--layers` 只决定按 shard index 发几轮调用**，每轮都 `wait()`，增加数据量但不增加并发。
+  所以 `--layers 1` 最省时间，用它就对了。
+
+换句话说：只要 `--blocks ≥ 2`，两条引擎就能并行；`--blocks 512` 已经远超饱和点。
+
 ### 1.3 跑 8 组
 
 ```bash
