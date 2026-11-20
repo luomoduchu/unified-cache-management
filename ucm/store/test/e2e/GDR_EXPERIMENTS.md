@@ -83,6 +83,23 @@ echo 2048 | sudo tee /proc/sys/vm/nr_hugepages   # 2 MiB × 2048 = 4 GiB
 
 配套把 `--cache-capacity-gb 32` 降到 `2`：512 block × 144 KB 只有 72 MB，32 GB 纯属浪费。
 
+**⑤ GPU buffer 必须预注册，否则 GDR 慢 60 倍**
+
+GDR 拷贝前要先拿到目标地址对应的 `ibv_reg_mr`。CacheStore 只在启动时按
+`gpu_kv_buffer_addrs` / `gpu_kv_buffer_sizes` 注册一次，之后每笔拷贝查表命中。
+如果这两个键没传（`DeviceBufferRegistry` 为空），每笔拷贝都会走
+`gdr_copy.cc` 的兜底：当场 `ibv_reg_mr`、拷完立刻 `ibv_dereg_mr`，日志是
+
+```
+[UC][W] GPU MR cache miss at addr(0x7f9da6000000) size(147456); fallback to per-transfer MR.
+```
+
+代价是 **351 µs/shard**（正常拷贝是 5.4 µs/shard），512 个 shard 一轮变成 179 ms，
+带宽 0.42 GB/s —— 比纯 CE 慢 60 倍。
+
+`cache_bw.py` 从 8bffb22 之后的提交开始会自动注册，看到这条 WARN 就说明版本不对或
+`--device` 不是 `cuda`。判断标准：GDR 或 hybrid 模式下**不应出现** `GPU MR cache miss`。
+
 ---
 
 ## 1. 第一阶段：`cache_bw.py` 机制验证

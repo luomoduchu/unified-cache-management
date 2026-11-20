@@ -277,7 +277,7 @@ def sample_byte(block_id, shard):
     )
 
 
-def store_config(args, workload, run_id, rank, *, seed=False):
+def store_config(args, workload, run_id, rank, *, seed=False, kv_buffers=None):
     if seed:
         pipeline = "Posix"
     elif args.mode == "cache-hit":
@@ -313,6 +313,16 @@ def store_config(args, workload, run_id, rank, *, seed=False):
         cache_fallback_numa_rank=rank,
         cache_fallback_numa_rank_count=args.workers,
     )
+    if kv_buffers and args.device == "cuda":
+        # Hand the store one contiguous range per KV tensor, exactly the way the
+        # vLLM connector does. Without it GDR finds no registered range for the
+        # destination and falls back to a per-transfer ibv_reg_mr ("GPU MR cache
+        # miss"), which costs hundreds of microseconds per shard and turns this
+        # into a registration benchmark instead of a copy benchmark.
+        config["gpu_kv_buffer_addrs"] = [buffer.data_ptr() for buffer in kv_buffers]
+        config["gpu_kv_buffer_sizes"] = [
+            buffer.numel() * buffer.element_size() for buffer in kv_buffers
+        ]
     if args.cache_numa_nodes is not None:
         config["cache_detected_numa_node"] = args.cache_numa_nodes[rank]
     if args.cache_copy != "auto":
@@ -479,11 +489,13 @@ def setup_device(args, rank):
 
 def make_rows(torch, workload, device, count):
     # Separate KV views, with consecutive blocks within each view as in a cache tensor.
+    # The views themselves are returned so their range can be registered with the
+    # store; rows[block][t] is a slice of views[t].
     views = [
         torch.empty((count, size), dtype=torch.uint8, device=device)
         for size in workload.tensor_sizes
     ]
-    return [[view[block] for view in views] for block in range(count)]
+    return [[view[block] for view in views] for block in range(count)], views
 
 
 def fill_rows(rows, ids, shard):
@@ -586,15 +598,18 @@ def seed_worker(args, workload, run_id, rank, barrier):
 def load_worker(args, workload, run_id, rank, barrier, results):
     torch, runtime, device = setup_device(args, rank)
     metrics = setup_load_metrics(results.bounds)
-    store = open_store(store_config(args, workload, run_id, rank))
+    # The measured destination has to exist before the store is built: the store
+    # resolves GPU addresses against the registered ranges once, when it starts.
+    rows, kv_buffers = make_rows(torch, workload, device, args.blocks)
+    store = open_store(store_config(args, workload, run_id, rank, kv_buffers=kv_buffers))
     barrier.wait()
     if args.mode == "cache-hit":
         indexes = list(owned_indexes(args, rank))
         if indexes:
             all_ids = block_ids(args, run_id, 0, rank)
             ids = [all_ids[index] for index in indexes]
-            rows = make_rows(torch, workload, device, len(ids))
-            prefill = prepare_transfer(rows, ids, workload)
+            prefill_rows, _ = make_rows(torch, workload, device, len(ids))
+            prefill = prepare_transfer(prefill_rows, ids, workload)
             costs = transfer_request(store, runtime, prefill, dump=True)
             print_api_sample(
                 "prefill",
@@ -603,9 +618,8 @@ def load_worker(args, workload, run_id, rank, barrier, results):
                 costs,
                 workload.payload_size * len(ids) * workload.shards,
             )
-            del prefill, rows
+            del prefill, prefill_rows
         barrier.wait()
-    rows = make_rows(torch, workload, device, args.blocks)
     records = args.warmup + args.epochs
     requests = [
         prepare_transfer(rows, block_ids(args, run_id, record, rank), workload)
